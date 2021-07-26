@@ -19,7 +19,7 @@ use async_std::{
     net::{TcpListener, TcpStream},
     task,
 };
-use futures::future::{Future, FutureExt, LocalBoxFuture};
+use futures::future::{Future, FutureExt, BoxFuture};
 use qstring::QString;
 pub use req::Request;
 pub use req::Response;
@@ -34,7 +34,7 @@ mod tests {
     use futures::future::FutureExt;
     use qstring::QString;
 
-    use crate::{util, Engine, Request};
+    use crate::{AsyncFnPtr, Engine, Request , util};
 
     /* #[test]
     fn it_works() {
@@ -82,12 +82,13 @@ mod tests {
     fn hbtp_server() {
         let mut serv = Engine::new(None, "0.0.0.0:7030");
         println!("hbtp serv start!!!");
-        let cb = move |ctx: &mut crate::Context| testFun(ctx);
-        let fun = Box::new(cb);
-        serv.reg_fun(1, Box::new(cb));
+        // let cb = move |ctx: &mut crate::Context| testFun(ctx);
+        // let fun = Box::new(cb);
+        // let func = |ctx| Box::pin(testFun(ctx));
+        serv.reg_fun(1, testFun);
         serv.run();
     }
-    async fn testFun(c: &mut crate::Context) {
+    async fn testFun(c:&'static mut crate::Context) {
         println!(
             "testFun ctrl:{},cmd:{},ishell:{},arg hello1:{}",
             c.control(),
@@ -105,10 +106,11 @@ mod tests {
     }
     #[test]
     fn hbtp_request() {
+        async_std::task::block_on(async{
         let mut req = Request::new("localhost:7030", 1);
         req.command("hello");
         req.add_arg("hehe1", "123456789");
-        match req.do_string(None, "dedededede") {
+        match req.do_string(None, "dedededede").await {
             Err(e) => println!("do err:{}", e),
             Ok(res) => {
                 println!("res code:{}", res.get_code());
@@ -117,6 +119,7 @@ mod tests {
                 }
             }
         };
+        });
     }
     #[test]
     fn qstring_test() {
@@ -128,9 +131,35 @@ mod tests {
 }
 // type ConnFun = fn(res: &mut Context);
 // type ConnFun = impl Fn(i32) -> Future;
-type ConnFun<'r> = Box<FnOnce(&'r Context) -> LocalBoxFuture<'r, ()> + 'r>;
+// type ConnFun = fn(res: &mut Context)->Pin<Box<dyn Future<Output = ()>>>;
 // pub type ConnFuture = Box<dyn Future<Output = ()>>;
 // type ConnFun = Box<fn(&mut Context) -> dyn Future<Output = ()>>;
+// type ConnFun = Box<dyn Fn(&'static mut Context) -> BoxFuture<'static, ()> + Send + 'static>;
+// type ConnFun = Box<dyn Fn(&mut Context) -> BoxFuture<'static,()>;
+// pub type ConnFun = AsyncFnPtr<()>;
+
+struct AsyncFnPtr {
+    func: Box<dyn Fn(&'static mut Context) -> BoxFuture<'static, ()> + Send + 'static>
+}
+
+impl AsyncFnPtr {
+    /* fn new<F>(f: fn(&'static mut Context) -> F)->AsyncFnPtr where F: Future<Output = ()> + Send + 'static {
+        AsyncFnPtr {
+            func: Box::new(move |c:&'static mut Context| Box::pin(f(c))),
+        }
+    } */
+    /* fn new<F>(f: fn(&'static mut Context) -> F) -> AsyncFnPtr<F::Output> where F: Future<Output = R> + Send + 'static {
+        AsyncFnPtr {
+            func: Box::new(move |c:&mut Context| Box::pin(f(c))),
+        }
+    } */
+    async fn run(&self,c:&'static mut Context) { 
+        println!("AsyncFnPtr run!");
+        let fnc=&self.func;
+        fnc(c).await 
+    }
+}
+
 
 pub const ResCodeOk: i32 = 1;
 pub const ResCodeErr: i32 = 2;
@@ -152,10 +181,14 @@ pub fn controller(args: TokenStream, input: TokenStream) -> TokenStream {
 
 pub struct Engine {
     ctx: util::Context,
-    fns: HashMap<i32, LinkedList<ConnFun>>,
+    fns: HashMap<i32, LinkedList<AsyncFnPtr>>,
     addr: String,
     lsr: Option<TcpListener>,
 }
+unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
+unsafe impl Send for AsyncFnPtr {}
+unsafe impl Sync for AsyncFnPtr {}
 impl Drop for Engine {
     fn drop(&mut self) {
         self.lsr = None;
@@ -176,10 +209,11 @@ impl Engine {
         self.lsr = None;
         self.ctx.stop();
     }
-    pub fn run(&self) -> io::Result<()> {
+    pub fn run(&mut self) -> io::Result<()> {
         task::block_on(self.runs())
     }
     async fn runs(&mut self) -> io::Result<()> {
+        let ptr = self as *mut Self;
         let lsr = TcpListener::bind(self.addr.as_str()).await?;
         self.lsr = Some(lsr);
         while !self.ctx.done() {
@@ -188,22 +222,67 @@ impl Engine {
                 while let Some(stream) = ing.next().await {
                     if let Ok(conn) = stream {
                         let ctx = self.ctx.clone();
-                        let ptr = &self.fns as *const HashMap<i32, LinkedList<ConnFun>> as u64;
-                        task::spawn(run_cli(ctx, conn, ptr)).catch_unwind();
+                        let this = unsafe { &mut *ptr };
+                        task::spawn(
+                            this.run_cli(conn)
+                        );
                     }
                 }
             }
         }
         Ok(())
     }
+    async fn run_cli(&mut self,mut conn: TcpStream) -> io::Result<()> {
+        println!("accept conn addr:{:?}", conn.peer_addr()?);
+        match ParseContext(&self.ctx, &mut conn).await {
+            Err(e) => println!("ParseContext err:{}", e),
+            Ok(mut res) => {
+                println!("control:{}",res.control());
+                res.conn = Some(conn);
+                if let Some(ls) = self.fns.get(&res.control()) {
+                    let mut itr = ls.iter();
+                    while let Some(f) = itr.next() {
+                        if res.is_sended() {
+                            break;
+                        }
+                        // let fp = fb as *const ConnFun;
+                        // let fs = unsafe { *fp };
+                        // mem::forget(fs);
 
-    pub fn reg_fun(&mut self, control: i32, f: ConnFun) {
+                        // let rp=&mut res as *mut Context;
+                        // let fp=f as *const AsyncFnPtr;
+                        // let rtx=unsafe{&mut *rp};
+                        let mut rtx=Context::new(1);
+                        // let rtxs=unsafe{&mut *(&mut rtx as *mut Context) as &'static mut Context};
+                        // let fpn=unsafe{&*fp};
+                        // unsafe{(*fp).run(unsafe{&mut *rp as &'static mut Context})}.await;
+                        let fnc=&f.func;
+                        fnc(&mut rtx).await;
+                        // task::spawn(fpn.run(rtx)).await;
+                    }
+    
+                    if !res.is_sended() {
+                        res.res_string(ResCodeErr, "Unknown");
+                    }
+                } else {
+                    println!("not found function:{}", res.control())
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
+    pub fn reg_fun<F>(&mut self, control: i32,f: fn(&'static mut Context) -> F) where F: Future<Output = ()> + Send + 'static {
         // fun(&mut Context::new(1));
+        let fnc=AsyncFnPtr {
+            func: Box::new(move |c:&'static mut Context| Box::pin(f(c))),
+        };
         if let Some(v) = self.fns.get_mut(&control) {
-            v.push_back(f);
+            v.push_back(fnc);
         } else {
             let mut v = LinkedList::new();
-            v.push_back(f);
+            v.push_back(fnc);
             self.fns.insert(control, v);
         }
     }
@@ -260,38 +339,10 @@ async fn ParseContext(ctx: &util::Context, conn: &mut TcpStream) -> io::Result<C
     Ok(rt)
 }
 
-async fn run_cli(ctx: util::Context, mut conn: TcpStream, ptr: u64) -> io::Result<()> {
-    // let fns = unsafe { &*(ptr as *const HashMap<i32, LinkedList<ConnFun>>) };
-    match ParseContext(&ctx, &mut conn).await {
-        Err(e) => println!("ParseContext err:{}", e),
-        Ok(mut res) => {
-            res.conn = Some(conn);
-            /* if let Some(ls) = fns.get(&res.control()) {
-                let mut itr = ls.iter();
-                while let Some(fb) = itr.next() {
-                    if res.is_sended() {
-                        break;
-                    }
-                    let fp = fb as *const ConnFun;
-                    let fs = unsafe { *fp };
-                    // mem::forget(fs);
-                    fs(&mut res).await;
-                }
-
-                if !res.is_sended() {
-                    res.res_string(ResCodeErr, "Unknown");
-                }
-            } else {
-                println!("not found function:{}", res.control())
-            } */
-        }
-    }
-    Ok(())
-}
-fn callfun(fun: &ConnFun, ctx: &mut Context) {
+/* fn callfun(fun: &ConnFun, ctx: &mut Context) {
     std::panic::catch_unwind(|| println!("callfun catch panic"));
     fun(ctx);
-}
+} */
 
 pub struct Context {
     sended: bool,
@@ -304,6 +355,8 @@ pub struct Context {
 
     data: HashMap<String, Vec<u8>>,
 }
+unsafe impl Send for Context {}
+unsafe impl Sync for Context {}
 impl Context {
     pub fn new(control: i32) -> Self {
         Self {

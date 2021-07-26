@@ -1,10 +1,15 @@
 use std::{
     io, mem,
-    net::{TcpStream, ToSocketAddrs},
+    net::{ToSocketAddrs},
     time::Duration,
 };
 
 use qstring::QString;
+use async_std::prelude::*;
+use async_std::{
+    net::{TcpListener, TcpStream},
+    task,
+};
 
 use crate::{util, MaxBodys, MaxHeads, MsgInfo, ResInfoV1};
 
@@ -75,13 +80,13 @@ impl Request {
             self.args = Some(QString::new(vec![(name, value)]));
         }
     }
-    fn connect(&mut self) -> io::Result<TcpStream> {
+    async fn connect(&mut self) -> io::Result<TcpStream> {
         match self.addr.as_str().to_socket_addrs() {
             Err(e) => return Err(util::ioerrs(format!("parse:{}", e).as_str(), None)),
             Ok(mut v) => loop {
                 if let Some(sa) = v.next() {
                     println!("getip:{}", sa);
-                    if let Ok(conn) = TcpStream::connect_timeout(&sa, self.tmout.clone()) {
+                    if let Ok(conn) = TcpStream::connect(&sa).await {
                         return Ok(conn);
                     }
                 } else {
@@ -91,8 +96,8 @@ impl Request {
         };
         Err(util::ioerrs("not found ip", None))
     }
-    fn send(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<TcpStream> {
-        let mut conn = self.connect()?; //TcpStream::connect_timeout(&addr, self.tmout.clone())?;
+    async fn send(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<TcpStream> {
+        let mut conn = self.connect().await?; //TcpStream::connect_timeout(&addr, self.tmout.clone())?;
         if self.sended {
             return Err(util::ioerrs("already request!", None));
         }
@@ -114,30 +119,30 @@ impl Request {
         }
         let bts = util::struct2byte(&reqs);
         let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
-        util::tcp_write(&ctx, &mut conn, bts)?;
+        util::tcp_write(&ctx, &mut conn, bts).await?;
         if reqs.lenCmd > 0 {
             let bts = self.cmds.as_bytes();
-            util::tcp_write(&ctx, &mut conn, bts)?;
+            util::tcp_write(&ctx, &mut conn, bts).await?;
         }
         if reqs.lenArg > 0 {
             let bts = args.as_bytes();
-            util::tcp_write(&ctx, &mut conn, bts)?;
+            util::tcp_write(&ctx, &mut conn, bts).await?;
         }
         if let Some(v) = hds {
             let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
-            util::tcp_write(&ctx, &mut conn, v)?;
+            util::tcp_write(&ctx, &mut conn, v).await?;
         }
         if let Some(v) = bds {
             let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(50));
-            util::tcp_write(&ctx, &mut conn, v)?;
+            util::tcp_write(&ctx, &mut conn, v).await?;
         }
         Ok(conn)
     }
-    fn response(&self, mut conn: TcpStream) -> io::Result<Response> {
+    async fn response(&self, mut conn: TcpStream) -> io::Result<Response> {
         let mut info = ResInfoV1::new();
         let infoln = mem::size_of::<ResInfoV1>();
         let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
-        let bts = util::tcp_read(&ctx, &mut conn, infoln)?;
+        let bts = util::tcp_read(&ctx, &mut conn, infoln).await?;
         util::byte2struct(&mut info, &bts[..])?;
         if (info.lenHead) as u64 > MaxHeads {
             return Err(util::ioerrs("bytes2 out limit!!", None));
@@ -150,38 +155,38 @@ impl Request {
         let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
         let lnsz = info.lenHead as usize;
         if lnsz > 0 {
-            let bts = util::tcp_read(&ctx, &mut conn, lnsz as usize)?;
+            let bts = util::tcp_read(&ctx, &mut conn, lnsz as usize).await?;
             rt.heads = Some(bts);
         }
         let ctx = util::Context::with_timeout(self.ctx.clone(), Duration::from_secs(50));
         let lnsz = info.lenBody as usize;
         if lnsz > 0 {
-            let bts = util::tcp_read(&ctx, &mut conn, lnsz as usize)?;
+            let bts = util::tcp_read(&ctx, &mut conn, lnsz as usize).await?;
             rt.bodys = Some(bts);
         }
         rt.conn = Some(conn);
         Ok(rt)
     }
-    pub fn dors(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<Response> {
-        let conn = self.send(hds, bds)?;
-        self.response(conn)
+    pub async fn dors(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<Response> {
+        let conn = self.send(hds, bds).await?;
+        self.response(conn).await
     }
-    pub fn donrs(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<()> {
-        let conn = self.send(hds, bds)?;
+    pub async fn donrs(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<()> {
+        let conn = self.send(hds, bds).await?;
         self.conn = Some(conn);
         Ok(())
     }
-    pub fn res(&mut self) -> io::Result<Response> {
+    pub async fn res(&mut self) -> io::Result<Response> {
         if let Some(v) = std::mem::replace(&mut self.conn, None) {
-            return self.response(v);
+            return self.response(v).await;
         }
         Err(util::ioerrs("send?", None))
     }
-    pub fn do_bytes(&mut self, hds: Option<&[u8]>, bds: &[u8]) -> io::Result<Response> {
-        self.dors(hds, Some(bds))
+    pub async fn do_bytes(&mut self, hds: Option<&[u8]>, bds: &[u8]) -> io::Result<Response> {
+        self.dors(hds, Some(bds)).await
     }
-    pub fn do_string(&mut self, hds: Option<&[u8]>, s: &str) -> io::Result<Response> {
-        self.do_bytes(hds, s.as_bytes())
+    pub async fn do_string(&mut self, hds: Option<&[u8]>, s: &str) -> io::Result<Response> {
+        self.do_bytes(hds, s.as_bytes()).await
     }
 }
 
