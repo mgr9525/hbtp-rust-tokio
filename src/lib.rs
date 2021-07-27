@@ -5,11 +5,13 @@ extern crate qstring;
 
 use std::{
     any,
-    borrow::Cow,
+    borrow::{BorrowMut, Cow},
     collections::{HashMap, LinkedList},
     io, mem,
     pin::Pin,
-    ptr, thread,
+    ptr,
+    sync::Arc,
+    thread,
     time::{Duration, SystemTime},
     usize,
 };
@@ -19,22 +21,24 @@ use async_std::{
     net::{TcpListener, TcpStream},
     task,
 };
-use futures::future::{Future, FutureExt, BoxFuture};
+use futures::future::{BoxFuture, Future, FutureExt};
 use qstring::QString;
 pub use req::Request;
 pub use req::Response;
+pub use res::Context;
 
-pub mod req;
+mod req;
+mod res;
 pub mod util;
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, mem, pin::Pin, thread};
+    use std::{future::Future, mem, pin::Pin, sync::Arc, thread};
 
     use futures::future::FutureExt;
     use qstring::QString;
 
-    use crate::{AsyncFnPtr, Engine, Request , util};
+    use crate::{util, AsyncFnPtr, Engine, Request};
 
     /* #[test]
     fn it_works() {
@@ -88,7 +92,7 @@ mod tests {
         serv.reg_fun(1, testFun);
         serv.run();
     }
-    async fn testFun(c:&'static mut crate::Context) {
+    async fn testFun(c: Arc<crate::Context>) {
         println!(
             "testFun ctrl:{},cmd:{},ishell:{},arg hello1:{}",
             c.control(),
@@ -106,19 +110,19 @@ mod tests {
     }
     #[test]
     fn hbtp_request() {
-        async_std::task::block_on(async{
-        let mut req = Request::new("localhost:7030", 1);
-        req.command("hello");
-        req.add_arg("hehe1", "123456789");
-        match req.do_string(None, "dedededede").await {
-            Err(e) => println!("do err:{}", e),
-            Ok(res) => {
-                println!("res code:{}", res.get_code());
-                if let Some(bs) = res.get_bodys() {
-                    println!("res data:{}", std::str::from_utf8(&bs[..]).unwrap())
+        async_std::task::block_on(async {
+            let mut req = Request::new("localhost:7030", 1);
+            req.command("hello");
+            req.add_arg("hehe1", "123456789");
+            match req.do_string(None, "dedededede").await {
+                Err(e) => println!("do err:{}", e),
+                Ok(res) => {
+                    println!("res code:{}", res.get_code());
+                    if let Some(bs) = res.get_bodys() {
+                        println!("res data:{}", std::str::from_utf8(&bs[..]).unwrap())
+                    }
                 }
-            }
-        };
+            };
         });
     }
     #[test]
@@ -139,7 +143,7 @@ mod tests {
 // pub type ConnFun = AsyncFnPtr<()>;
 
 struct AsyncFnPtr {
-    func: Box<dyn Fn(&'static mut Context) -> BoxFuture<'static, ()> + Send + 'static>
+    func: Box<dyn Fn(Arc<crate::Context>) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
 }
 
 impl AsyncFnPtr {
@@ -153,22 +157,17 @@ impl AsyncFnPtr {
             func: Box::new(move |c:&mut Context| Box::pin(f(c))),
         }
     } */
-    async fn run(&self,c:&'static mut Context) { 
+    /* async fn run(&self, c: &'static mut Context) {
         println!("AsyncFnPtr run!");
-        let fnc=&self.func;
-        fnc(c).await 
-    }
+        let fnc = &self.func;
+        fnc(c).await
+    } */
 }
-
 
 pub const ResCodeOk: i32 = 1;
 pub const ResCodeErr: i32 = 2;
 pub const ResCodeAuth: i32 = 3;
 pub const ResCodeNotFound: i32 = 4;
-
-const MaxOther: u64 = 1024 * 1024 * 20; //20M
-const MaxHeads: u64 = 1024 * 1024 * 100; //100M
-const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
 
 // #[macro_export]
 /* #[proc_macro_attribute]
@@ -223,26 +222,24 @@ impl Engine {
                     if let Ok(conn) = stream {
                         let ctx = self.ctx.clone();
                         let this = unsafe { &mut *ptr };
-                        task::spawn(
-                            this.run_cli(conn)
-                        );
+                        task::spawn(this.run_cli(conn));
                     }
                 }
             }
         }
         Ok(())
     }
-    async fn run_cli(&mut self,mut conn: TcpStream) -> io::Result<()> {
+    async fn run_cli(&mut self, mut conn: TcpStream) -> io::Result<()> {
         println!("accept conn addr:{:?}", conn.peer_addr()?);
-        match ParseContext(&self.ctx, &mut conn).await {
+        match res::ParseContext(&self.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(mut res) => {
-                println!("control:{}",res.control());
-                res.conn = Some(conn);
+                println!("control:{}", res.control());
                 if let Some(ls) = self.fns.get(&res.control()) {
+                    let rec = Arc::new(res);
                     let mut itr = ls.iter();
                     while let Some(f) = itr.next() {
-                        if res.is_sended() {
+                        if rec.is_sended() {
                             break;
                         }
                         // let fp = fb as *const ConnFun;
@@ -252,17 +249,17 @@ impl Engine {
                         // let rp=&mut res as *mut Context;
                         // let fp=f as *const AsyncFnPtr;
                         // let rtx=unsafe{&mut *rp};
-                        let mut rtx=Context::new(1);
+                        let mut rtx = Context::new(1);
                         // let rtxs=unsafe{&mut *(&mut rtx as *mut Context) as &'static mut Context};
                         // let fpn=unsafe{&*fp};
                         // unsafe{(*fp).run(unsafe{&mut *rp as &'static mut Context})}.await;
-                        let fnc=&f.func;
-                        fnc(&mut rtx).await;
+                        let fnc = &f.func;
+                        fnc(rec.clone()).await;
                         // task::spawn(fpn.run(rtx)).await;
                     }
-    
-                    if !res.is_sended() {
-                        res.res_string(ResCodeErr, "Unknown");
+
+                    if !rec.is_sended() {
+                        rec.res_string(ResCodeErr, "Unknown");
                     }
                 } else {
                     println!("not found function:{}", res.control())
@@ -273,10 +270,13 @@ impl Engine {
     }
 
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
-    pub fn reg_fun<F>(&mut self, control: i32,f: fn(&'static mut Context) -> F) where F: Future<Output = ()> + Send + 'static {
+    pub fn reg_fun<F>(&mut self, control: i32, f: fn(Arc<Context>) -> F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         // fun(&mut Context::new(1));
-        let fnc=AsyncFnPtr {
-            func: Box::new(move |c:&'static mut Context| Box::pin(f(c))),
+        let fnc = AsyncFnPtr {
+            func: Box::new(move |c: Arc<Context>| Box::pin(f(c))),
         };
         if let Some(v) = self.fns.get_mut(&control) {
             v.push_back(fnc);
@@ -284,235 +284,6 @@ impl Engine {
             let mut v = LinkedList::new();
             v.push_back(fnc);
             self.fns.insert(control, v);
-        }
-    }
-}
-
-async fn ParseContext(ctx: &util::Context, conn: &mut TcpStream) -> io::Result<Context> {
-    let mut info = MsgInfo::new();
-    let infoln = mem::size_of::<MsgInfo>();
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
-    let bts = util::tcp_read(&ctxs, conn, infoln).await?;
-    util::byte2struct(&mut info, &bts[..])?;
-    if info.version != 1 {
-        return Err(util::ioerrs("not found version!", None));
-    }
-    if (info.lenCmd + info.lenArg) as u64 > MaxOther {
-        return Err(util::ioerrs("bytes1 out limit!!", None));
-    }
-    if (info.lenHead) as u64 > MaxHeads {
-        return Err(util::ioerrs("bytes2 out limit!!", None));
-    }
-    if (info.lenBody) as u64 > MaxBodys {
-        return Err(util::ioerrs("bytes3 out limit!!", None));
-    }
-    let mut rt = Context::new(info.control);
-    let lnsz = info.lenCmd as usize;
-    if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, conn, lnsz).await?;
-        rt.cmds = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(util::ioerrs("cmd err", None)),
-            Ok(v) => String::from(v),
-        };
-    }
-    let lnsz = info.lenArg as usize;
-    if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, conn, lnsz as usize).await?;
-        let args = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(util::ioerrs("args err", None)),
-            Ok(v) => String::from(v),
-        };
-        rt.args = Some(QString::from(args.as_str()));
-    }
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
-    let lnsz = info.lenHead as usize;
-    if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, conn, lnsz as usize).await?;
-        rt.heads = Some(bts);
-    }
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
-    let lnsz = info.lenBody as usize;
-    if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, conn, lnsz as usize).await?;
-        rt.bodys = Some(bts);
-    }
-    Ok(rt)
-}
-
-/* fn callfun(fun: &ConnFun, ctx: &mut Context) {
-    std::panic::catch_unwind(|| println!("callfun catch panic"));
-    fun(ctx);
-} */
-
-pub struct Context {
-    sended: bool,
-    conn: Option<TcpStream>,
-    ctrl: i32,
-    cmds: String,
-    args: Option<QString>,
-    heads: Option<Box<[u8]>>,
-    bodys: Option<Box<[u8]>>,
-
-    data: HashMap<String, Vec<u8>>,
-}
-unsafe impl Send for Context {}
-unsafe impl Sync for Context {}
-impl Context {
-    pub fn new(control: i32) -> Self {
-        Self {
-            sended: false,
-            conn: None,
-            ctrl: control,
-            cmds: String::new(),
-            args: None,
-            heads: None,
-            bodys: None,
-            data: HashMap::new(),
-        }
-    }
-    pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
-        self.data.get(&String::from(s))
-    }
-    pub fn put_data(&mut self, s: &str, v: Vec<u8>) {
-        self.data.insert(String::from(s), v);
-    }
-    pub fn get_conn(&self) -> &TcpStream {
-        if let Some(v) = &self.conn {
-            return v;
-        }
-        panic!("conn?");
-    }
-    pub fn own_conn(&mut self) -> TcpStream {
-        if let Some(v) = std::mem::replace(&mut self.conn, None) {
-            return v;
-        }
-        panic!("conn?");
-    }
-    pub fn control(&self) -> i32 {
-        self.ctrl
-    }
-    pub fn command(&self) -> &str {
-        self.cmds.as_str()
-    }
-    pub fn get_args<'a>(&'a self) -> Option<&'a QString> {
-        if let Some(v) = &self.args {
-            Some(v)
-        } else {
-            None
-        }
-    }
-    pub fn get_arg(&self, name: &str) -> Option<String> {
-        if let Some(v) = &self.args {
-            if let Some(s) = v.get(name) {
-                Some(String::from(s))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-    /* pub fn set_arg(&mut self, name: &str, value: &str) {
-        if let None = &self.args {
-            self.args = Some(QString::from(""));
-        }
-        self.args.unwrap().add_str(origin)
-    } */
-    pub fn add_arg(&mut self, name: &str, value: &str) {
-        if let Some(v) = &mut self.args {
-            v.add_pair((name, value));
-        } else {
-            self.args = Some(QString::new(vec![(name, value)]));
-        }
-    }
-    pub fn get_heads(&self) -> &Option<Box<[u8]>> {
-        &self.heads
-    }
-    pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
-        &self.bodys
-    }
-    pub fn is_sended(&self) -> bool {
-        self.sended
-    }
-
-    pub async fn response(
-        &mut self,
-        code: i32,
-        hds: Option<&[u8]>,
-        bds: Option<&[u8]>,
-    ) -> io::Result<()> {
-        let conn = match &mut self.conn {
-            Some(v) => v,
-            None => return Err(util::ioerrs("not found conn", None)),
-        };
-        if self.sended {
-            return Err(util::ioerrs("already responsed!", None));
-        }
-        self.sended = true;
-        let mut res = ResInfoV1::new();
-        res.code = code;
-        if let Some(v) = hds {
-            res.lenHead = v.len() as u32;
-        }
-        if let Some(v) = bds {
-            res.lenBody = v.len() as u32;
-        }
-        let bts = util::struct2byte(&res);
-        let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
-        util::tcp_write(&ctx, conn, bts).await?;
-        if let Some(v) = hds {
-            let ctx = util::Context::with_timeout(None, Duration::from_secs(20));
-            util::tcp_write(&ctx, conn, v).await?;
-        }
-        if let Some(v) = bds {
-            let ctx = util::Context::with_timeout(None, Duration::from_secs(30));
-            util::tcp_write(&ctx, conn, v).await?;
-        }
-
-        Ok(())
-    }
-    pub async fn res_bytes(&mut self, code: i32, bds: &[u8]) -> io::Result<()> {
-        self.response(code, None, Some(bds)).await
-    }
-    pub async fn res_string(&mut self, code: i32, s: &str) -> io::Result<()> {
-        self.res_bytes(code, s.as_bytes()).await
-    }
-}
-
-//----------------------------------bean
-#[repr(C, packed)]
-struct MsgInfo {
-    pub version: u16,
-    pub control: i32,
-    pub lenCmd: u16,
-    pub lenArg: u16,
-    pub lenHead: u32,
-    pub lenBody: u32,
-}
-impl MsgInfo {
-    pub fn new() -> Self {
-        Self {
-            version: 0,
-            control: 0,
-            lenCmd: 0,
-            lenArg: 0,
-            lenHead: 0,
-            lenBody: 0,
-        }
-    }
-}
-#[repr(C, packed)]
-struct ResInfoV1 {
-    pub code: i32,
-    pub lenHead: u32,
-    pub lenBody: u32,
-}
-impl ResInfoV1 {
-    pub fn new() -> Self {
-        Self {
-            code: 0,
-            lenHead: 0,
-            lenBody: 0,
         }
     }
 }

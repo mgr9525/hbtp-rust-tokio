@@ -1,17 +1,13 @@
-use std::{
-    io, mem,
-    net::{ToSocketAddrs},
-    time::Duration,
-};
+use std::{io, mem, net::ToSocketAddrs, time::Duration};
 
-use qstring::QString;
 use async_std::prelude::*;
 use async_std::{
     net::{TcpListener, TcpStream},
     task,
 };
+use qstring::QString;
 
-use crate::{util, MaxBodys, MaxHeads, MsgInfo, ResInfoV1};
+use crate::{res::*, util};
 
 pub struct Request {
     ctx: Option<util::Context>,
