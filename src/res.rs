@@ -1,6 +1,9 @@
-use std::{collections::HashMap, io, mem, time::Duration};
+use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 
-use async_std::net::TcpStream;
+use async_std::{
+    net::TcpStream,
+    sync::{RwLock, RwLockReadGuard},
+};
 use qstring::QString;
 
 use crate::util;
@@ -27,7 +30,7 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
     if (info.lenBody) as u64 > MaxBodys {
         return Err(util::ioerrs("bytes3 out limit!!", None));
     }
-    let mut rt = Context::new(info.control);
+    let mut rt = CtxInner::new(info.control);
     let lnsz = info.lenCmd as usize;
     if lnsz > 0 {
         let bts = util::tcp_read(&ctxs, &mut conn, lnsz).await?;
@@ -58,7 +61,7 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
         rt.bodys = Some(bts);
     }
     rt.conn = Some(conn);
-    Ok(rt)
+    Ok(Context::new(rt))
 }
 
 /* fn callfun(fun: &ConnFun, ctx: &mut Context) {
@@ -66,7 +69,11 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
   fun(ctx);
 } */
 
+#[derive(Clone)]
 pub struct Context {
+    pub inner: Arc<RwLock<CtxInner>>,
+}
+pub struct CtxInner {
     sended: bool,
     conn: Option<TcpStream>,
     ctrl: i32,
@@ -77,9 +84,7 @@ pub struct Context {
 
     data: HashMap<String, Vec<u8>>,
 }
-unsafe impl Send for Context {}
-unsafe impl Sync for Context {}
-impl Context {
+impl CtxInner {
     pub fn new(control: i32) -> Self {
         Self {
             sended: false,
@@ -92,12 +97,158 @@ impl Context {
             data: HashMap::new(),
         }
     }
-    pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
+}
+impl Context {
+    fn new(inr: CtxInner) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(inr)),
+        }
+    }
+
+    pub async fn get_data(&self, s: &str) -> Option<Vec<u8>> {
+        let this = self.inner.read().await;
+        if let Some(v) = this.data.get(&String::from(s)) {
+            return Some(v.clone());
+        }
+        None
+    }
+    pub async fn put_data(&self, s: &str, v: Vec<u8>) {
+        let mut this = self.inner.write().await;
+        this.data.insert(String::from(s), v);
+    }
+    /* pub fn get_conn(&self) -> &TcpStream {
+        if let Ok(this) = self.inner.read() {
+            if let Some(v) = &this.conn {
+                return v;
+            }
+        }
+        panic!("conn?");
+    } */
+    pub async fn own_conn(&self) -> TcpStream {
+        let mut this = self.inner.write().await;
+        if let Some(v) = std::mem::replace(&mut this.conn, None) {
+            return v;
+        }
+        panic!("conn?");
+    }
+    pub async fn control(&self) -> i32 {
+        let this = self.inner.read().await;
+        this.ctrl
+    }
+    pub async fn command(&self) -> String {
+        let this = self.inner.read().await;
+        this.cmds.clone()
+    }
+    pub async fn get_args(&self) -> Option<QString> {
+        let this = self.inner.read().await;
+        if let Some(v) = &this.args {
+            return Some(v.clone());
+        }
+        None
+    }
+    pub async fn get_arg(&self, name: &str) -> Option<String> {
+        let this = self.inner.read().await;
+        if let Some(v) = &this.args {
+            if let Some(s) = v.get(name) {
+                return Some(String::from(s));
+            }
+        }
+        None
+    }
+    /* pub fn set_arg(&self, name: &str, value: &str) {
+        if let None = &self.args {
+            self.args = Some(QString::from(""));
+        }
+        self.args.unwrap().add_str(origin)
+    } */
+    pub async fn add_arg(&self, name: &str, value: &str) {
+        let mut this = self.inner.write().await;
+        if let Some(v) = &mut this.args {
+            v.add_pair((name, value));
+        } else {
+            this.args = Some(QString::new(vec![(name, value)]));
+        }
+    }
+    pub fn get<'a>(&'a self) -> Option<&'a Arc<RwLock<CtxInner>>> {
+        Some(&self.inner)
+    }
+    pub async fn get_heads(&self) -> Option<Box<[u8]>> {
+        let this = self.inner.read().await;
+        if let Some(v) = &this.heads {
+            return Some(v.clone());
+        }
+        None
+    }
+    pub async fn get_bodys(&self) -> Option<Box<[u8]>> {
+        let this = self.inner.read().await;
+        if let Some(v) = &this.bodys {
+            return Some(v.clone());
+        }
+        None
+    }
+    pub async fn is_sended(&self) -> bool {
+        let this = self.inner.read().await;
+        this.sended
+    }
+
+    pub async fn response(
+        &self,
+        code: i32,
+        hds: Option<&[u8]>,
+        bds: Option<&[u8]>,
+    ) -> io::Result<()> {
+        let mut this = self.inner.write().await;
+        /* let conn = match &mut self.conn {
+            Some(v) => v,
+            None => return Err(util::ioerrs("not found conn", None)),
+        }; */
+        if let None = this.conn {
+            return Err(util::ioerrs("not found conn", None));
+        }
+        if this.sended {
+            return Err(util::ioerrs("already responsed!", None));
+        }
+        this.sended = true;
+        let mut res = ResInfoV1::new();
+        res.code = code;
+        if let Some(v) = hds {
+            res.lenHead = v.len() as u32;
+        }
+        if let Some(v) = bds {
+            res.lenBody = v.len() as u32;
+        }
+        if let Some(conn) = &mut this.conn {
+            let bts = util::struct2byte(&res);
+            let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
+            util::tcp_write(&ctx, conn, bts).await?;
+            if let Some(v) = hds {
+                let ctx = util::Context::with_timeout(None, Duration::from_secs(20));
+                util::tcp_write(&ctx, conn, v).await?;
+            }
+            if let Some(v) = bds {
+                let ctx = util::Context::with_timeout(None, Duration::from_secs(30));
+                util::tcp_write(&ctx, conn, v).await?;
+            }
+        } else {
+            return Err(util::ioerrs("not found conn", None));
+        }
+
+        Ok(())
+    }
+    pub async fn res_bytes(&self, code: i32, bds: &[u8]) -> io::Result<()> {
+        self.response(code, None, Some(bds)).await
+    }
+    pub async fn res_string(&self, code: i32, s: &str) -> io::Result<()> {
+        self.res_bytes(code, s.as_bytes()).await
+    }
+}
+impl CtxInner {
+    /* pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
         self.data.get(&String::from(s))
     }
     pub fn put_data(&mut self, s: &str, v: Vec<u8>) {
         self.data.insert(String::from(s), v);
-    }
+    } */
     pub fn get_conn(&self) -> &TcpStream {
         if let Some(v) = &self.conn {
             return v;
@@ -155,49 +306,6 @@ impl Context {
     }
     pub fn is_sended(&self) -> bool {
         self.sended
-    }
-
-    pub async fn response(
-        &mut self,
-        code: i32,
-        hds: Option<&[u8]>,
-        bds: Option<&[u8]>,
-    ) -> io::Result<()> {
-        let conn = match &mut self.conn {
-            Some(v) => v,
-            None => return Err(util::ioerrs("not found conn", None)),
-        };
-        if self.sended {
-            return Err(util::ioerrs("already responsed!", None));
-        }
-        self.sended = true;
-        let mut res = ResInfoV1::new();
-        res.code = code;
-        if let Some(v) = hds {
-            res.lenHead = v.len() as u32;
-        }
-        if let Some(v) = bds {
-            res.lenBody = v.len() as u32;
-        }
-        let bts = util::struct2byte(&res);
-        let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
-        util::tcp_write(&ctx, conn, bts).await?;
-        if let Some(v) = hds {
-            let ctx = util::Context::with_timeout(None, Duration::from_secs(20));
-            util::tcp_write(&ctx, conn, v).await?;
-        }
-        if let Some(v) = bds {
-            let ctx = util::Context::with_timeout(None, Duration::from_secs(30));
-            util::tcp_write(&ctx, conn, v).await?;
-        }
-
-        Ok(())
-    }
-    pub async fn res_bytes(&mut self, code: i32, bds: &[u8]) -> io::Result<()> {
-        self.response(code, None, Some(bds)).await
-    }
-    pub async fn res_string(&mut self, code: i32, s: &str) -> io::Result<()> {
-        self.res_bytes(code, s.as_bytes()).await
     }
 }
 

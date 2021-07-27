@@ -26,6 +26,7 @@ use qstring::QString;
 pub use req::Request;
 pub use req::Response;
 pub use res::Context;
+// pub use res::CtxInner;
 
 mod req;
 mod res;
@@ -92,14 +93,18 @@ mod tests {
         serv.reg_fun(1, testFun);
         serv.run();
     }
-    async fn testFun(c: Arc<crate::Context>) {
+    async fn testFun(c: crate::Context) {
         println!(
             "testFun ctrl:{},cmd:{},ishell:{},arg hello1:{}",
-            c.control(),
-            c.command(),
-            c.command() == "hello",
-            c.get_arg("hehe1").unwrap().as_str()
+            c.control().await,
+            c.command().await,
+            c.command().await == "hello",
+            c.get_arg("hehe1").await.unwrap().as_str()
         );
+        if let Some(v) = c.get() {
+            let cs = v.read().await;
+            cs.get_bodys();
+        }
         // panic!("whats?");
         if let Err(e) = c
             .res_string(crate::ResCodeOk, "hello,there is rust!!")
@@ -143,25 +148,7 @@ mod tests {
 // pub type ConnFun = AsyncFnPtr<()>;
 
 struct AsyncFnPtr {
-    func: Box<dyn Fn(Arc<crate::Context>) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
-}
-
-impl AsyncFnPtr {
-    /* fn new<F>(f: fn(&'static mut Context) -> F)->AsyncFnPtr where F: Future<Output = ()> + Send + 'static {
-        AsyncFnPtr {
-            func: Box::new(move |c:&'static mut Context| Box::pin(f(c))),
-        }
-    } */
-    /* fn new<F>(f: fn(&'static mut Context) -> F) -> AsyncFnPtr<F::Output> where F: Future<Output = R> + Send + 'static {
-        AsyncFnPtr {
-            func: Box::new(move |c:&mut Context| Box::pin(f(c))),
-        }
-    } */
-    /* async fn run(&self, c: &'static mut Context) {
-        println!("AsyncFnPtr run!");
-        let fnc = &self.func;
-        fnc(c).await
-    } */
+    func: Box<dyn Fn(crate::Context) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
 }
 
 pub const ResCodeOk: i32 = 1;
@@ -234,12 +221,11 @@ impl Engine {
         match res::ParseContext(&self.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(mut res) => {
-                println!("control:{}", res.control());
-                if let Some(ls) = self.fns.get(&res.control()) {
-                    let rec = Arc::new(res);
+                println!("control:{}", res.control().await);
+                if let Some(ls) = self.fns.get(&res.control().await) {
                     let mut itr = ls.iter();
                     while let Some(f) = itr.next() {
-                        if rec.is_sended() {
+                        if res.is_sended().await {
                             break;
                         }
                         // let fp = fb as *const ConnFun;
@@ -249,20 +235,20 @@ impl Engine {
                         // let rp=&mut res as *mut Context;
                         // let fp=f as *const AsyncFnPtr;
                         // let rtx=unsafe{&mut *rp};
-                        let mut rtx = Context::new(1);
+                        // let mut rtx = Context::new(1);
                         // let rtxs=unsafe{&mut *(&mut rtx as *mut Context) as &'static mut Context};
                         // let fpn=unsafe{&*fp};
                         // unsafe{(*fp).run(unsafe{&mut *rp as &'static mut Context})}.await;
                         let fnc = &f.func;
-                        fnc(rec.clone()).await;
+                        fnc(res.clone()).await;
                         // task::spawn(fpn.run(rtx)).await;
                     }
 
-                    if !rec.is_sended() {
-                        rec.res_string(ResCodeErr, "Unknown");
+                    if !res.is_sended().await {
+                        res.res_string(ResCodeErr, "Unknown").await;
                     }
                 } else {
-                    println!("not found function:{}", res.control())
+                    println!("not found function:{}", res.control().await)
                 }
             }
         }
@@ -270,13 +256,13 @@ impl Engine {
     }
 
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
-    pub fn reg_fun<F>(&mut self, control: i32, f: fn(Arc<Context>) -> F)
+    pub fn reg_fun<F>(&mut self, control: i32, f: fn(Context) -> F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
         // fun(&mut Context::new(1));
         let fnc = AsyncFnPtr {
-            func: Box::new(move |c: Arc<Context>| Box::pin(f(c))),
+            func: Box::new(move |c: Context| Box::pin(f(c))),
         };
         if let Some(v) = self.fns.get_mut(&control) {
             v.push_back(fnc);
