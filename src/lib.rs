@@ -205,27 +205,41 @@ impl Engine {
         &mut *(self.ptr as *mut Inner)
     }
     pub fn stop(&self) {
-        let ins = unsafe { self.inners() };
-        ins.lsr = None;
+        unsafe { self.inners().lsr = None };
         self.inner.ctx.stop();
     }
     pub async fn run(self) -> io::Result<()> {
         let lsr = TcpListener::bind(self.inner.addr.as_str()).await?;
         unsafe { self.inners().lsr = Some(lsr) };
+        let c = self.clone();
+        task::spawn(async move {
+            task::block_on(Self::runs(c));
+        });
+
         while !self.inner.ctx.done() {
-            if let Some(lsr) = &self.inner.lsr {
-                let mut ing = lsr.incoming();
-                while let Some(stream) = ing.next().await {
-                    if let Ok(conn) = stream {
-                        let c = self.clone();
-                        task::spawn(async move {
-                            task::block_on(Self::run_cli(c, conn));
-                        });
+            task::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(())
+    }
+    async fn runs(self) {
+        if let Some(lsr) = &self.inner.lsr {
+            let mut incom = lsr.incoming();
+            while !self.inner.ctx.done() {
+                match incom.next().await {
+                    None => break,
+                    Some(stream) => {
+                        if let Ok(conn) = stream {
+                            let c = self.clone();
+                            task::spawn(async move {
+                                task::block_on(Self::run_cli(c, conn));
+                            });
+                        } else {
+                            println!("stream conn err!!!!")
+                        }
                     }
                 }
             }
         }
-        Ok(())
     }
     async fn run_cli(self, mut conn: TcpStream) {
         match res::ParseContext(&self.inner.ctx, conn).await {
