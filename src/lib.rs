@@ -10,7 +10,7 @@ use std::{
     io, mem,
     pin::Pin,
     ptr,
-    sync::Arc,
+    sync::{Arc, RwLock},
     thread,
     time::{Duration, SystemTime},
     usize,
@@ -36,6 +36,7 @@ pub mod util;
 mod tests {
     use std::{future::Future, mem, pin::Pin, sync::Arc, thread};
 
+    use async_std::task;
     use futures::future::FutureExt;
     use qstring::QString;
 
@@ -91,7 +92,7 @@ mod tests {
         // let fun = Box::new(cb);
         // let func = |ctx| Box::pin(testFun(ctx));
         serv.reg_fun(1, testFun);
-        serv.run();
+        task::block_on(Engine::run(serv));
     }
     async fn testFun(c: crate::Context) {
         println!(
@@ -165,17 +166,22 @@ pub fn controller(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut args = parse_macro_input!(args as Args);
 } */
 
+#[derive(Clone)]
 pub struct Engine {
+    inner: Arc<Inner>,
+    ptr: u64,
+}
+struct Inner {
     ctx: util::Context,
-    fns: HashMap<i32, LinkedList<AsyncFnPtr>>,
+    fns: RwLock<HashMap<i32, LinkedList<AsyncFnPtr>>>,
     addr: String,
     lsr: Option<TcpListener>,
 }
-unsafe impl Send for Engine {}
-unsafe impl Sync for Engine {}
-unsafe impl Send for AsyncFnPtr {}
-unsafe impl Sync for AsyncFnPtr {}
-impl Drop for Engine {
+// unsafe impl Send for Engine {}
+// unsafe impl Sync for Engine {}
+// unsafe impl Send for AsyncFnPtr {}
+// unsafe impl Sync for AsyncFnPtr {}
+impl Drop for Inner {
     fn drop(&mut self) {
         self.lsr = None;
         self.ctx.stop();
@@ -184,77 +190,70 @@ impl Drop for Engine {
 }
 impl Engine {
     pub fn new(ctx: Option<util::Context>, addr: &str) -> Self {
-        Self {
+        let inr = Arc::new(Inner {
             ctx: util::Context::background(ctx),
-            fns: HashMap::new(),
+            fns: RwLock::new(HashMap::new()),
             addr: String::from(addr),
             lsr: None,
+        });
+        Self {
+            ptr: (&*inr) as *const Inner as u64,
+            inner: inr,
         }
     }
-    pub fn stop(&mut self) {
-        self.lsr = None;
-        self.ctx.stop();
+    unsafe fn inners<'a>(&'a self) -> &'a mut Inner {
+        &mut *(self.ptr as *mut Inner)
     }
-    pub fn run(&mut self) -> io::Result<()> {
-        task::block_on(self.runs())
+    pub fn stop(&self) {
+        let ins = unsafe { self.inners() };
+        ins.lsr = None;
+        self.inner.ctx.stop();
     }
-    async fn runs(&mut self) -> io::Result<()> {
-        let ptr = self as *mut Self;
-        let lsr = TcpListener::bind(self.addr.as_str()).await?;
-        self.lsr = Some(lsr);
-        while !self.ctx.done() {
-            if let Some(lsr) = &self.lsr {
+    pub async fn run(self) -> io::Result<()> {
+        let lsr = TcpListener::bind(self.inner.addr.as_str()).await?;
+        unsafe { self.inners().lsr = Some(lsr) };
+        while !self.inner.ctx.done() {
+            if let Some(lsr) = &self.inner.lsr {
                 let mut ing = lsr.incoming();
                 while let Some(stream) = ing.next().await {
                     if let Ok(conn) = stream {
-                        let ctx = self.ctx.clone();
-                        let this = unsafe { &mut *ptr };
-                        task::spawn(this.run_cli(conn));
+                        let c = self.clone();
+                        task::spawn(async move {
+                            task::block_on(Self::run_cli(c, conn));
+                        });
                     }
                 }
             }
         }
         Ok(())
     }
-    async fn run_cli(&mut self, mut conn: TcpStream) -> io::Result<()> {
-        println!("accept conn addr:{:?}", conn.peer_addr()?);
-        match res::ParseContext(&self.ctx, conn).await {
+    async fn run_cli(self, mut conn: TcpStream) {
+        match res::ParseContext(&self.inner.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(mut res) => {
                 println!("control:{}", res.control().await);
-                if let Some(ls) = self.fns.get(&res.control().await) {
-                    let mut itr = ls.iter();
-                    while let Some(f) = itr.next() {
-                        if res.is_sended().await {
-                            break;
+                if let Ok(lkv) = self.inner.fns.read() {
+                    if let Some(ls) = lkv.get(&res.control().await) {
+                        let mut itr = ls.iter();
+                        while let Some(f) = itr.next() {
+                            if res.is_sended().await {
+                                break;
+                            }
+                            let fnc = &f.func;
+                            fnc(res.clone()).await;
+                            // task::spawn(fpn.run(rtx)).await;
                         }
-                        // let fp = fb as *const ConnFun;
-                        // let fs = unsafe { *fp };
-                        // mem::forget(fs);
 
-                        // let rp=&mut res as *mut Context;
-                        // let fp=f as *const AsyncFnPtr;
-                        // let rtx=unsafe{&mut *rp};
-                        // let mut rtx = Context::new(1);
-                        // let rtxs=unsafe{&mut *(&mut rtx as *mut Context) as &'static mut Context};
-                        // let fpn=unsafe{&*fp};
-                        // unsafe{(*fp).run(unsafe{&mut *rp as &'static mut Context})}.await;
-                        let fnc = &f.func;
-                        fnc(res.clone()).await;
-                        // task::spawn(fpn.run(rtx)).await;
+                        if !res.is_sended().await {
+                            res.res_string(ResCodeErr, "Unknown").await;
+                        }
+                    } else {
+                        println!("not found function:{}", res.control().await)
                     }
-
-                    if !res.is_sended().await {
-                        res.res_string(ResCodeErr, "Unknown").await;
-                    }
-                } else {
-                    println!("not found function:{}", res.control().await)
                 }
             }
         }
-        Ok(())
     }
-
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
     pub fn reg_fun<F>(&mut self, control: i32, f: fn(Context) -> F)
     where
@@ -264,12 +263,14 @@ impl Engine {
         let fnc = AsyncFnPtr {
             func: Box::new(move |c: Context| Box::pin(f(c))),
         };
-        if let Some(v) = self.fns.get_mut(&control) {
-            v.push_back(fnc);
-        } else {
-            let mut v = LinkedList::new();
-            v.push_back(fnc);
-            self.fns.insert(control, v);
+        if let Ok(mut lkv) = self.inner.fns.write() {
+            if let Some(v) = lkv.get_mut(&control) {
+                v.push_back(fnc);
+            } else {
+                let mut v = LinkedList::new();
+                v.push_back(fnc);
+                lkv.insert(control, v);
+            }
         }
     }
 }
