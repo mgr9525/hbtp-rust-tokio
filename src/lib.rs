@@ -269,7 +269,7 @@ impl Engine {
         }
     }
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
-    pub fn reg_fun<F>(&mut self, control: i32, f: fn(Context) -> F)
+    pub fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
