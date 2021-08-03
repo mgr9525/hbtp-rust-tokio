@@ -241,28 +241,36 @@ impl Engine {
             }
         }
     }
-    async fn run_cli(self, mut conn: TcpStream) {
+    async fn run_cli(self, conn: TcpStream) {
         match res::ParseContext(&self.inner.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
-            Ok(mut res) => {
+            Ok(res) => {
                 // println!("control:{}", res.control());
+                let mut fncs = None;
                 if let Ok(lkv) = self.inner.fns.read() {
                     if let Some(ls) = lkv.get(&res.control()) {
+                        let mut vs = Vec::with_capacity(ls.len());
                         let mut itr = ls.iter();
                         while let Some(f) = itr.next() {
-                            if res.is_sended() {
-                                break;
-                            }
                             let fnc = &f.func;
-                            fnc(res.clone()).await;
-                            // task::spawn(fpn.run(rtx)).await;
+                            vs.push(fnc(res.clone()))
                         }
-
-                        if !res.is_sended() {
-                            res.res_string(ResCodeErr, "Unknown").await;
+                        fncs = Some(vs);
+                    }
+                }
+                if let Some(ls) = fncs {
+                    for ft in ls {
+                        if res.is_sended() {
+                            break;
                         }
-                    } else {
-                        println!("not found function:{}", res.control())
+                        ft.await
+                    }
+                } else {
+                    println!("not found function:{}", res.control())
+                }
+                if !res.is_sended() {
+                    if let Err(e) = res.res_string(ResCodeErr, "Unknown").await {
+                        println!("res_string Unknown err:{}", e.to_string().as_str());
                     }
                 }
             }
