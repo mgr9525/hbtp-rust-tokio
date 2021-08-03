@@ -245,7 +245,7 @@ impl Engine {
         match res::ParseContext(&self.inner.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(mut res) => {
-                println!("control:{}", res.control());
+                // println!("control:{}", res.control());
                 if let Ok(lkv) = self.inner.fns.read() {
                     if let Some(ls) = lkv.get(&res.control()) {
                         let mut itr = ls.iter();
