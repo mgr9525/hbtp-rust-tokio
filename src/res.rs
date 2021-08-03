@@ -108,7 +108,8 @@ impl Context {
         self.inner.data.get(&String::from(s))
     }
     pub fn put_data(&self, s: &str, v: Vec<u8>) {
-        self.inner.data.insert(String::from(s), v);
+        let ins = unsafe { self.inners() };
+        ins.data.insert(String::from(s), v);
     }
 
     /* pub fn get_conn(&self) -> &TcpStream {
@@ -157,10 +158,11 @@ impl Context {
         self.args.unwrap().add_str(origin)
     } */
     pub fn add_arg(&mut self, name: &str, value: &str) {
-        if let Some(v) = &mut self.inner.args {
+        let ins = unsafe { self.inners() };
+        if let Some(v) = &mut ins.args {
             v.add_pair((name, value));
         } else {
-            self.inner.args = Some(QString::new(vec![(name, value)]));
+            ins.args = Some(QString::new(vec![(name, value)]));
         }
     }
     pub fn get_heads(&self) -> &Option<Box<[u8]>> {
@@ -189,7 +191,8 @@ impl Context {
         if self.inner.sended {
             return Err(util::ioerrs("already responsed!", None));
         }
-        self.inner.sended = true;
+        let ins = unsafe { self.inners() };
+        ins.sended = true;
         let mut res = ResInfoV1::new();
         res.code = code;
         if let Some(v) = hds {
@@ -198,7 +201,7 @@ impl Context {
         if let Some(v) = bds {
             res.lenBody = v.len() as u32;
         }
-        if let Some(conn) = &mut self.inner.conn {
+        if let Some(conn) = &mut ins.conn {
             let bts = util::struct2byte(&res);
             let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
             util::tcp_write(&ctx, conn, bts).await?;
@@ -221,72 +224,6 @@ impl Context {
     }
     pub async fn res_string(&self, code: i32, s: &str) -> io::Result<()> {
         self.res_bytes(code, s.as_bytes()).await
-    }
-}
-impl CtxInner {
-    /* pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
-        self.data.get(&String::from(s))
-    }
-    pub fn put_data(&mut self, s: &str, v: Vec<u8>) {
-        self.data.insert(String::from(s), v);
-    } */
-    pub fn get_conn(&self) -> &TcpStream {
-        if let Some(v) = &self.conn {
-            return v;
-        }
-        panic!("conn?");
-    }
-    pub fn own_conn(&mut self) -> TcpStream {
-        if let Some(v) = std::mem::replace(&mut self.conn, None) {
-            return v;
-        }
-        panic!("conn?");
-    }
-    pub fn control(&self) -> i32 {
-        self.ctrl
-    }
-    pub fn command(&self) -> &str {
-        self.cmds.as_str()
-    }
-    pub fn get_args<'a>(&'a self) -> Option<&'a QString> {
-        if let Some(v) = &self.args {
-            Some(v)
-        } else {
-            None
-        }
-    }
-    pub fn get_arg(&self, name: &str) -> Option<String> {
-        if let Some(v) = &self.args {
-            if let Some(s) = v.get(name) {
-                Some(String::from(s))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-    /* pub fn set_arg(&mut self, name: &str, value: &str) {
-        if let None = &self.args {
-            self.args = Some(QString::from(""));
-        }
-        self.args.unwrap().add_str(origin)
-    } */
-    pub fn add_arg(&mut self, name: &str, value: &str) {
-        if let Some(v) = &mut self.args {
-            v.add_pair((name, value));
-        } else {
-            self.args = Some(QString::new(vec![(name, value)]));
-        }
-    }
-    pub fn get_heads(&self) -> &Option<Box<[u8]>> {
-        &self.heads
-    }
-    pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
-        &self.bodys
-    }
-    pub fn is_sended(&self) -> bool {
-        self.sended
     }
 }
 

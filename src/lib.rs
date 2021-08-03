@@ -97,15 +97,15 @@ mod tests {
     async fn testFun(c: crate::Context) {
         println!(
             "testFun ctrl:{},cmd:{},ishell:{},arg hello1:{}",
-            c.control().await,
-            c.command().await,
-            c.command().await == "hello",
-            c.get_arg("hehe1").await.unwrap().as_str()
+            c.control(),
+            c.command(),
+            c.command() == "hello",
+            c.get_arg("hehe1").unwrap().as_str()
         );
-        if let Some(v) = c.get() {
+        /* if let Some(v) = c.get() {
             let cs = v.read().await;
             cs.get_bodys();
-        }
+        } */
         // panic!("whats?");
         if let Err(e) = c
             .res_string(crate::ResCodeOk, "hello,there is rust!!")
@@ -245,12 +245,12 @@ impl Engine {
         match res::ParseContext(&self.inner.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(mut res) => {
-                println!("control:{}", res.control().await);
+                println!("control:{}", res.control());
                 if let Ok(lkv) = self.inner.fns.read() {
-                    if let Some(ls) = lkv.get(&res.control().await) {
+                    if let Some(ls) = lkv.get(&res.control()) {
                         let mut itr = ls.iter();
                         while let Some(f) = itr.next() {
-                            if res.is_sended().await {
+                            if res.is_sended() {
                                 break;
                             }
                             let fnc = &f.func;
@@ -258,11 +258,11 @@ impl Engine {
                             // task::spawn(fpn.run(rtx)).await;
                         }
 
-                        if !res.is_sended().await {
+                        if !res.is_sended() {
                             res.res_string(ResCodeErr, "Unknown").await;
                         }
                     } else {
-                        println!("not found function:{}", res.control().await)
+                        println!("not found function:{}", res.control())
                     }
                 }
             }
