@@ -1,9 +1,6 @@
 use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 
-use async_std::{
-    net::TcpStream,
-    sync::{RwLock, RwLockReadGuard},
-};
+use async_std::net::TcpStream;
 use qstring::QString;
 
 use crate::util;
@@ -30,11 +27,12 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
     if (info.lenBody) as u64 > MaxBodys {
         return Err(util::ioerrs("bytes3 out limit!!", None));
     }
-    let mut rt = CtxInner::new(info.control);
+    let mut rt = Context::new(info.control);
+    let ins = unsafe { rt.inners() };
     let lnsz = info.lenCmd as usize;
     if lnsz > 0 {
         let bts = util::tcp_read(&ctxs, &mut conn, lnsz).await?;
-        rt.cmds = match std::str::from_utf8(&bts[..]) {
+        ins.cmds = match std::str::from_utf8(&bts[..]) {
             Err(e) => return Err(util::ioerrs("cmd err", None)),
             Ok(v) => String::from(v),
         };
@@ -46,22 +44,22 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
             Err(e) => return Err(util::ioerrs("args err", None)),
             Ok(v) => String::from(v),
         };
-        rt.args = Some(QString::from(args.as_str()));
+        ins.args = Some(QString::from(args.as_str()));
     }
     let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
     let lnsz = info.lenHead as usize;
     if lnsz > 0 {
         let bts = util::tcp_read(&ctxs, &mut conn, lnsz as usize).await?;
-        rt.heads = Some(bts);
+        ins.heads = Some(bts);
     }
     let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
     let lnsz = info.lenBody as usize;
     if lnsz > 0 {
         let bts = util::tcp_read(&ctxs, &mut conn, lnsz as usize).await?;
-        rt.bodys = Some(bts);
+        ins.bodys = Some(bts);
     }
-    rt.conn = Some(conn);
-    Ok(Context::new(rt))
+    ins.conn = Some(conn);
+    Ok(rt)
 }
 
 /* fn callfun(fun: &ConnFun, ctx: &mut Context) {
@@ -71,9 +69,10 @@ pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Resul
 
 #[derive(Clone)]
 pub struct Context {
-    pub inner: Arc<RwLock<CtxInner>>,
+    ptr: u64,
+    inner: Arc<CtxInner>,
 }
-pub struct CtxInner {
+struct CtxInner {
     sended: bool,
     conn: Option<TcpStream>,
     ctrl: i32,
@@ -84,9 +83,9 @@ pub struct CtxInner {
 
     data: HashMap<String, Vec<u8>>,
 }
-impl CtxInner {
-    pub fn new(control: i32) -> Self {
-        Self {
+impl Context {
+    fn new(control: i32) -> Self {
+        let inr = Arc::new(CtxInner {
             sended: false,
             conn: None,
             ctrl: control,
@@ -95,27 +94,23 @@ impl CtxInner {
             heads: None,
             bodys: None,
             data: HashMap::new(),
+        });
+        Self {
+            ptr: (&*inr) as *const CtxInner as u64,
+            inner: inr,
         }
     }
-}
-impl Context {
-    fn new(inr: CtxInner) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(inr)),
-        }
+    unsafe fn inners<'a>(&'a self) -> &'a mut CtxInner {
+        &mut *(self.ptr as *mut CtxInner)
     }
 
-    pub async fn get_data(&self, s: &str) -> Option<Vec<u8>> {
-        let this = self.inner.read().await;
-        if let Some(v) = this.data.get(&String::from(s)) {
-            return Some(v.clone());
-        }
-        None
+    pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
+        self.inner.data.get(&String::from(s))
     }
-    pub async fn put_data(&self, s: &str, v: Vec<u8>) {
-        let mut this = self.inner.write().await;
-        this.data.insert(String::from(s), v);
+    pub fn put_data(&self, s: &str, v: Vec<u8>) {
+        self.inner.data.insert(String::from(s), v);
     }
+
     /* pub fn get_conn(&self) -> &TcpStream {
         if let Ok(this) = self.inner.read() {
             if let Some(v) = &this.conn {
@@ -124,71 +119,58 @@ impl Context {
         }
         panic!("conn?");
     } */
-    pub async fn own_conn(&self) -> TcpStream {
-        let mut this = self.inner.write().await;
-        if let Some(v) = std::mem::replace(&mut this.conn, None) {
+    pub fn own_conn(&self) -> TcpStream {
+        let ins = unsafe { self.inners() };
+        if let Some(v) = std::mem::replace(&mut ins.conn, None) {
             return v;
         }
         panic!("conn?");
     }
-    pub async fn control(&self) -> i32 {
-        let this = self.inner.read().await;
-        this.ctrl
+    pub fn control(&self) -> i32 {
+        self.inner.ctrl
     }
-    pub async fn command(&self) -> String {
-        let this = self.inner.read().await;
-        this.cmds.clone()
+    pub fn command(&self) -> &str {
+        self.inner.cmds.as_str()
     }
-    pub async fn get_args(&self) -> Option<QString> {
-        let this = self.inner.read().await;
-        if let Some(v) = &this.args {
-            return Some(v.clone());
+    pub fn get_args<'a>(&'a self) -> Option<&'a QString> {
+        if let Some(v) = &self.inner.args {
+            Some(v)
+        } else {
+            None
         }
-        None
     }
-    pub async fn get_arg(&self, name: &str) -> Option<String> {
-        let this = self.inner.read().await;
-        if let Some(v) = &this.args {
+    pub fn get_arg(&self, name: &str) -> Option<String> {
+        if let Some(v) = &self.inner.args {
             if let Some(s) = v.get(name) {
-                return Some(String::from(s));
+                Some(String::from(s))
+            } else {
+                None
             }
+        } else {
+            None
         }
-        None
     }
-    /* pub fn set_arg(&self, name: &str, value: &str) {
+    /* pub fn set_arg(&mut self, name: &str, value: &str) {
         if let None = &self.args {
             self.args = Some(QString::from(""));
         }
         self.args.unwrap().add_str(origin)
     } */
-    pub async fn add_arg(&self, name: &str, value: &str) {
-        let mut this = self.inner.write().await;
-        if let Some(v) = &mut this.args {
+    pub fn add_arg(&mut self, name: &str, value: &str) {
+        if let Some(v) = &mut self.inner.args {
             v.add_pair((name, value));
         } else {
-            this.args = Some(QString::new(vec![(name, value)]));
+            self.inner.args = Some(QString::new(vec![(name, value)]));
         }
     }
-    pub fn get<'a>(&'a self) -> Option<&'a Arc<RwLock<CtxInner>>> {
-        Some(&self.inner)
+    pub fn get_heads(&self) -> &Option<Box<[u8]>> {
+        &self.inner.heads
     }
-    pub async fn get_heads(&self) -> Option<Box<[u8]>> {
-        let this = self.inner.read().await;
-        if let Some(v) = &this.heads {
-            return Some(v.clone());
-        }
-        None
+    pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
+        &self.inner.bodys
     }
-    pub async fn get_bodys(&self) -> Option<Box<[u8]>> {
-        let this = self.inner.read().await;
-        if let Some(v) = &this.bodys {
-            return Some(v.clone());
-        }
-        None
-    }
-    pub async fn is_sended(&self) -> bool {
-        let this = self.inner.read().await;
-        this.sended
+    pub fn is_sended(&self) -> bool {
+        self.inner.sended
     }
 
     pub async fn response(
@@ -197,18 +179,17 @@ impl Context {
         hds: Option<&[u8]>,
         bds: Option<&[u8]>,
     ) -> io::Result<()> {
-        let mut this = self.inner.write().await;
         /* let conn = match &mut self.conn {
             Some(v) => v,
             None => return Err(util::ioerrs("not found conn", None)),
         }; */
-        if let None = this.conn {
+        if let None = self.inner.conn {
             return Err(util::ioerrs("not found conn", None));
         }
-        if this.sended {
+        if self.inner.sended {
             return Err(util::ioerrs("already responsed!", None));
         }
-        this.sended = true;
+        self.inner.sended = true;
         let mut res = ResInfoV1::new();
         res.code = code;
         if let Some(v) = hds {
@@ -217,7 +198,7 @@ impl Context {
         if let Some(v) = bds {
             res.lenBody = v.len() as u32;
         }
-        if let Some(conn) = &mut this.conn {
+        if let Some(conn) = &mut self.inner.conn {
             let bts = util::struct2byte(&res);
             let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
             util::tcp_write(&ctx, conn, bts).await?;
