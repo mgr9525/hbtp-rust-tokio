@@ -171,6 +171,14 @@ impl Context {
     pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
         &self.inner.bodys
     }
+    pub fn own_heads(&self) -> Option<Box<[u8]>> {
+        let ins = unsafe { self.inners() };
+        std::mem::replace(&mut ins.heads, None)
+    }
+    pub fn own_bodys(&self) -> Option<Box<[u8]>> {
+        let ins = unsafe { self.inners() };
+        std::mem::replace(&mut ins.bodys, None)
+    }
     pub fn is_sended(&self) -> bool {
         self.inner.sended
     }
