@@ -9,7 +9,7 @@ pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
 pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
 pub const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
 
-pub async fn ParseContext(ctx: &util::Context, mut conn: TcpStream) -> io::Result<Context> {
+pub async fn parse_context(ctx: &util::Context, mut conn: TcpStream) -> io::Result<Context> {
     let mut info = MsgInfo::new();
     let infoln = mem::size_of::<MsgInfo>();
     let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));

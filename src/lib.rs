@@ -242,7 +242,7 @@ impl Engine {
         }
     }
     async fn run_cli(self, conn: TcpStream) {
-        match res::ParseContext(&self.inner.ctx, conn).await {
+        match res::parse_context(&self.inner.ctx, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(res) => {
                 // println!("control:{}", res.control());
