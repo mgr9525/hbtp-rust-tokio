@@ -81,10 +81,14 @@ impl Request {
             Err(e) => return Err(util::ioerrs(format!("parse:{}", e).as_str(), None)),
             Ok(mut v) => loop {
                 if let Some(sa) = v.next() {
-                    println!("getip:{}", sa);
-                    if let Ok(conn) = TcpStream::connect(&sa).await {
-                        return Ok(conn);
+                    // println!("connect to ip:{}", sa);
+                    if let Ok(conn) = std::net::TcpStream::connect_timeout(&sa, self.tmout.clone())
+                    {
+                        return Ok(TcpStream::from(conn));
                     }
+                    /* if let Ok(conn) = TcpStream::connect(&sa).await {
+                        return Ok(conn);
+                    } */
                 } else {
                     break;
                 }

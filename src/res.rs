@@ -13,6 +13,7 @@ pub async fn parse_context(ctx: &util::Context, mut conn: TcpStream) -> io::Resu
     let mut info = MsgInfo::new();
     let infoln = mem::size_of::<MsgInfo>();
     let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
+    println!("parse_context1:infoln:{}", infoln);
     let bts = util::tcp_read(&ctxs, &mut conn, infoln).await?;
     util::byte2struct(&mut info, &bts[..])?;
     if info.version != 1 {

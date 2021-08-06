@@ -34,7 +34,7 @@ pub mod util;
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, mem, pin::Pin, sync::Arc, thread};
+    use std::{future::Future, mem, pin::Pin, sync::Arc, thread, time::Duration};
 
     use async_std::task;
     use futures::future::FutureExt;
@@ -138,6 +138,15 @@ mod tests {
         let val = qs.get("foo").unwrap();
         println!("val:{},s:{}", val, qs.to_string());
     }
+    #[test]
+    fn ctx_test() {
+        let ctx = util::Context::with_timeout(None, Duration::from_secs(5));
+        while !ctx.done() {
+            println!("running");
+            thread::sleep_ms(500);
+        }
+        println!("end!!!");
+    }
 }
 // type ConnFun = fn(res: &mut Context);
 // type ConnFun = impl Fn(i32) -> Future;
@@ -213,15 +222,16 @@ impl Engine {
         unsafe { self.inners().lsr = Some(lsr) };
         let c = self.clone();
         task::spawn(async move {
-            task::block_on(Self::runs(c));
+            c.runs().await;
         });
 
+        // self.runs().await;
         while !self.inner.ctx.done() {
             task::sleep(Duration::from_millis(100)).await;
         }
         Ok(())
     }
-    async fn runs(self) {
+    async fn runs(&self) {
         if let Some(lsr) = &self.inner.lsr {
             let mut incom = lsr.incoming();
             while !self.inner.ctx.done() {
@@ -231,7 +241,8 @@ impl Engine {
                         if let Ok(conn) = stream {
                             let c = self.clone();
                             task::spawn(async move {
-                                task::block_on(Self::run_cli(c, conn));
+                                c.run_cli(conn).await;
+                                // task::block_on(c.run_cli(conn));
                             });
                         } else {
                             println!("stream conn err!!!!")
