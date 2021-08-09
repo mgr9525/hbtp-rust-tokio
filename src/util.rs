@@ -97,21 +97,31 @@ pub async fn tcp_write(
     if bts.len() <= 0 {
         return Ok(0);
     }
-    if ctx.done() {
-        return Err(io::Error::new(io::ErrorKind::Other, "ctx end!"));
-    }
-    match stream.write(bts).await {
-        Err(e) => Err(e),
-        Ok(n) => {
-            if n != bts.len() {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("send len err:{}/{}", n, bts.len()),
-                ))
-            } else {
-                Ok(n)
+    let mut wn = 0usize;
+    while wn < bts.len() {
+        if ctx.done() {
+            return Err(io::Error::new(io::ErrorKind::Other, "ctx end!"));
+        }
+        match stream.write(&bts[wn..]).await {
+            Err(e) => return Err(e),
+            Ok(n) => {
+                if n > 0 {
+                    wn += n;
+                } else {
+                    // let bts=&data[..];
+                    // println!("read errs:ln:{},rn:{},n:{}，dataln:{}，bts:{}",ln,rn,n,data.len(),bts.len());
+                    return Err(io::Error::new(io::ErrorKind::Other, "write err!"));
+                }
             }
         }
+    }
+    if wn != bts.len() {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("send len err:{}/{}", wn, bts.len()),
+        ))
+    } else {
+        Ok(wn)
     }
 }
 
