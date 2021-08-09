@@ -115,14 +115,7 @@ pub async fn tcp_write(
             }
         }
     }
-    if wn != bts.len() {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("send len err:{}/{}", wn, bts.len()),
-        ))
-    } else {
-        Ok(wn)
-    }
+    Ok(wn)
 }
 
 #[derive(Clone)]
