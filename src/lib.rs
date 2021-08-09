@@ -94,7 +94,7 @@ mod tests {
         serv.reg_fun(1, testFun);
         task::block_on(Engine::run(serv));
     }
-    async fn testFun(c: crate::Context) {
+    async fn testFun(c: crate::Context) -> std::io::Result<()> {
         println!(
             "testFun ctrl:{},cmd:{},ishell:{},arg hello1:{}",
             c.control(),
@@ -107,12 +107,9 @@ mod tests {
             cs.get_bodys();
         } */
         // panic!("whats?");
-        if let Err(e) = c
-            .res_string(crate::ResCodeOk, "hello,there is rust!!")
-            .await
-        {
-            println!("testFun res_string err:{}", e)
-        };
+        c.res_string(crate::ResCodeOk, "hello,there is rust!!")
+            .await?;
+        Ok(())
     }
     #[test]
     fn hbtp_request() {
@@ -158,7 +155,7 @@ mod tests {
 // pub type ConnFun = AsyncFnPtr<()>;
 
 struct AsyncFnPtr {
-    func: Box<dyn Fn(crate::Context) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
+    func: Box<dyn Fn(crate::Context) -> BoxFuture<'static, io::Result<()>> + Send + Sync + 'static>,
 }
 
 pub const ResCodeOk: i32 = 1;
@@ -274,7 +271,17 @@ impl Engine {
                         if res.is_sended() {
                             break;
                         }
-                        ft.await
+                        if let Err(e) = ft.await {
+                            if let Err(e) = res
+                                .res_string(
+                                    ResCodeErr,
+                                    format!("method return err:{:?}", e).as_str(),
+                                )
+                                .await
+                            {
+                                println!("res_string method err:{}", e.to_string().as_str());
+                            }
+                        }
                     }
                 } else {
                     println!("not found function:{}", res.control())
@@ -290,7 +297,7 @@ impl Engine {
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
     pub fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F)
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = io::Result<()>> + Send + 'static,
     {
         // fun(&mut Context::new(1));
         let fnc = AsyncFnPtr {
