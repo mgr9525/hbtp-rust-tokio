@@ -2,6 +2,7 @@
 extern crate async_std;
 extern crate futures;
 extern crate qstring;
+extern crate ruisutil;
 
 use std::{
     any,
@@ -30,7 +31,6 @@ pub use res::Context;
 
 mod req;
 mod res;
-pub mod util;
 
 #[cfg(test)]
 mod tests {
@@ -40,25 +40,25 @@ mod tests {
     use futures::future::FutureExt;
     use qstring::QString;
 
-    use crate::{util, AsyncFnPtr, Engine, Request};
+    use crate::{AsyncFnPtr, Engine, Request};
 
     /* #[test]
     fn it_works() {
         println!("hello test");
-        let ctx1 = util::Context::background(None);
-        let ctx2 = util::Context::background(Some(ctx1.clone()));
+        let ctx1 = ruisutil::Context::background(None);
+        let ctx2 = ruisutil::Context::background(Some(ctx1.clone()));
         println!("start:ctx1:{},ctx2:{}", ctx1.done(), ctx2.done());
         ctx2.stop();
         println!("end:ctx1:{},ctx2:{}", ctx1.done(), ctx2.done());
 
-        let wg = util::WaitGroup::new();
+        let wg = ruisutil::WaitGroup::new();
         let wg1 = wg.clone();
         thread::spawn(move || {
             let mut info = MsgInfo::new();
             info.version = 1;
             info.control = 2;
             info.lenCmd = 1000;
-            let bts = util::struct2byte(&info);
+            let bts = ruisutil::struct2byte(&info);
             let ln = std::mem::size_of::<MsgInfo>();
             println!(
                 "MsgInfo info.v:{},bts({}/{}):{:?}",
@@ -68,7 +68,7 @@ mod tests {
                 bts
             );
             let mut infos = MsgInfo::new();
-            if let Ok(()) = util::byte2struct(&mut infos, bts) {
+            if let Ok(()) = ruisutil::byte2struct(&mut infos, bts) {
                 println!(
                     "MsgInfos infos.v:{},ctrl:{},cmdln:{}",
                     infos.version, infos.control, infos.lenCmd
@@ -137,7 +137,7 @@ mod tests {
     }
     #[test]
     fn ctx_test() {
-        let ctx = util::Context::with_timeout(None, Duration::from_secs(5));
+        let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(5));
         while !ctx.done() {
             println!("running");
             thread::sleep_ms(500);
@@ -178,7 +178,7 @@ pub struct Engine {
     ptr: u64,
 }
 struct Inner {
-    ctx: util::Context,
+    ctx: ruisutil::Context,
     fns: RwLock<HashMap<i32, LinkedList<AsyncFnPtr>>>,
     addr: String,
     lsr: Option<TcpListener>,
@@ -195,9 +195,9 @@ impl Drop for Inner {
     }
 }
 impl Engine {
-    pub fn new(ctx: Option<util::Context>, addr: &str) -> Self {
+    pub fn new(ctx: Option<ruisutil::Context>, addr: &str) -> Self {
         let inr = Arc::new(Inner {
-            ctx: util::Context::background(ctx),
+            ctx: ruisutil::Context::background(ctx),
             fns: RwLock::new(HashMap::new()),
             addr: String::from(addr),
             lsr: None,

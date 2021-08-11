@@ -3,59 +3,57 @@ use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 use async_std::net::TcpStream;
 use qstring::QString;
 
-use crate::util;
-
 pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
 pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
 pub const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
 
-pub async fn parse_context(ctx: &util::Context, mut conn: TcpStream) -> io::Result<Context> {
+pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::Result<Context> {
     let mut info = MsgInfo::new();
     let infoln = mem::size_of::<MsgInfo>();
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
-    let bts = util::tcp_read(&ctxs, &mut conn, infoln).await?;
-    util::byte2struct(&mut info, &bts[..])?;
+    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
+    let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
+    ruisutil::byte2struct(&mut info, &bts[..])?;
     if info.version != 1 {
-        return Err(util::ioerrs("not found version!", None));
+        return Err(ruisutil::ioerr("not found version!", None));
     }
     if (info.lenCmd + info.lenArg) as u64 > MaxOther {
-        return Err(util::ioerrs("bytes1 out limit!!", None));
+        return Err(ruisutil::ioerr("bytes1 out limit!!", None));
     }
     if (info.lenHead) as u64 > MaxHeads {
-        return Err(util::ioerrs("bytes2 out limit!!", None));
+        return Err(ruisutil::ioerr("bytes2 out limit!!", None));
     }
     if (info.lenBody) as u64 > MaxBodys {
-        return Err(util::ioerrs("bytes3 out limit!!", None));
+        return Err(ruisutil::ioerr("bytes3 out limit!!", None));
     }
     let mut rt = Context::new(info.control);
     let ins = unsafe { rt.inners() };
     let lnsz = info.lenCmd as usize;
     if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, &mut conn, lnsz).await?;
+        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
         ins.cmds = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(util::ioerrs("cmd err", None)),
+            Err(e) => return Err(ruisutil::ioerr("cmd err", None)),
             Ok(v) => String::from(v),
         };
     }
     let lnsz = info.lenArg as usize;
     if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, &mut conn, lnsz as usize).await?;
+        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
         let args = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(util::ioerrs("args err", None)),
+            Err(e) => return Err(ruisutil::ioerr("args err", None)),
             Ok(v) => String::from(v),
         };
         ins.args = Some(QString::from(args.as_str()));
     }
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
+    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
     let lnsz = info.lenHead as usize;
     if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, &mut conn, lnsz as usize).await?;
+        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
         ins.heads = Some(bts);
     }
-    let ctxs = util::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
+    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
     let lnsz = info.lenBody as usize;
     if lnsz > 0 {
-        let bts = util::tcp_read(&ctxs, &mut conn, lnsz as usize).await?;
+        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
         ins.bodys = Some(bts);
     }
     ins.conn = Some(conn);
@@ -191,13 +189,13 @@ impl Context {
     ) -> io::Result<()> {
         /* let conn = match &mut self.conn {
             Some(v) => v,
-            None => return Err(util::ioerrs("not found conn", None)),
+            None => return Err(ruisutil::ioerr("not found conn", None)),
         }; */
         if let None = self.inner.conn {
-            return Err(util::ioerrs("not found conn", None));
+            return Err(ruisutil::ioerr("not found conn", None));
         }
         if self.inner.sended {
-            return Err(util::ioerrs("already responsed!", None));
+            return Err(ruisutil::ioerr("already responsed!", None));
         }
         let ins = unsafe { self.inners() };
         ins.sended = true;
@@ -210,19 +208,19 @@ impl Context {
             res.lenBody = v.len() as u32;
         }
         if let Some(conn) = &mut ins.conn {
-            let bts = util::struct2byte(&res);
-            let ctx = util::Context::with_timeout(None, Duration::from_secs(10));
-            util::tcp_write(&ctx, conn, bts).await?;
+            let bts = ruisutil::struct2byte(&res);
+            let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(10));
+            ruisutil::tcp_write_async(&ctx, conn, bts).await?;
             if let Some(v) = hds {
-                let ctx = util::Context::with_timeout(None, Duration::from_secs(20));
-                util::tcp_write(&ctx, conn, v).await?;
+                let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(20));
+                ruisutil::tcp_write_async(&ctx, conn, v).await?;
             }
             if let Some(v) = bds {
-                let ctx = util::Context::with_timeout(None, Duration::from_secs(30));
-                util::tcp_write(&ctx, conn, v).await?;
+                let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(30));
+                ruisutil::tcp_write_async(&ctx, conn, v).await?;
             }
         } else {
-            return Err(util::ioerrs("not found conn", None));
+            return Err(ruisutil::ioerr("not found conn", None));
         }
 
         Ok(())

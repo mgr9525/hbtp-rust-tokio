@@ -12,3 +12,4 @@ version = "0.1.0"
 async-std = "1.9.0"
 futures = "0.3.16"
 qstring = "0.7.2"
+ruisutil={git="https://github.com/mgr9525/rust-ruisutil.git", rev="a6763cd48c13598d93fb323d2575fb2ae91a5ca6"}
