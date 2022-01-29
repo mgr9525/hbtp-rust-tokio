@@ -6,6 +6,7 @@ use async_std::{
     task,
 };
 use qstring::QString;
+use serde::Deserialize;
 
 use crate::res::*;
 
@@ -197,7 +198,7 @@ pub struct Response {
     heads: Option<Box<[u8]>>,
     bodys: Option<Box<[u8]>>,
 }
-impl Response {
+impl<'a> Response {
     fn new() -> Self {
         Self {
             conn: None,
@@ -233,10 +234,13 @@ impl Response {
     pub fn own_bodys(&mut self) -> Option<Box<[u8]>> {
         std::mem::replace(&mut self.bodys, None)
     }
-    /* pub fn body_json<T:Deserialize<'a>>(&self)->Option<T>{
-      match &self.bodys{
-        None=>None,
-        Some(v)=>serde_json::from_slice(v)
-      }
-    } */
+    pub fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match &self.bodys {
+            None => Err(ruisutil::ioerr("bodys nil", None)),
+            Some(v) => match serde_json::from_slice(v) {
+                Ok(vs) => Ok(vs),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
+    }
 }
