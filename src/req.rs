@@ -6,7 +6,7 @@ use async_std::{
     task,
 };
 use qstring::QString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::res::*;
 
@@ -188,6 +188,12 @@ impl Request {
     }
     pub async fn do_string(&mut self, hds: Option<&[u8]>, s: &str) -> io::Result<Response> {
         self.do_bytes(hds, s.as_bytes()).await
+    }
+    pub async fn do_json<T: Serialize>(&mut self, hds: Option<&[u8]>, v: &T) -> io::Result<Response> {
+        match serde_json::to_string(v) {
+            Ok(body) => self.do_string(hds, body.as_str()).await,
+            Err(e) => Err(ruisutil::ioerr("not found conn", None)),
+        }
     }
 }
 
