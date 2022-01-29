@@ -2,7 +2,7 @@ use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 
 use async_std::net::TcpStream;
 use qstring::QString;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
 pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
@@ -27,7 +27,7 @@ pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::
         return Err(ruisutil::ioerr("bytes3 out limit!!", None));
     }
     let mut rt = Context::new(info.control);
-    let ins = unsafe { rt.inners() };
+    let ins = unsafe { rt.inner.muts() };
     let lnsz = info.lenCmd as usize;
     if lnsz > 0 {
         let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
@@ -66,10 +66,15 @@ pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::
   fun(ctx);
 } */
 
-#[derive(Clone)]
 pub struct Context {
-    ptr: u64,
-    inner: Arc<CtxInner>,
+  inner:ruisutil::ArcMutBox<CtxInner>,
+}
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 struct CtxInner {
     sended: bool,
@@ -82,9 +87,10 @@ struct CtxInner {
 
     data: HashMap<String, Vec<u8>>,
 }
-impl Context {
+impl<'a> Context {
     fn new(control: i32) -> Self {
-        let inr = Arc::new(CtxInner {
+        Self {
+          inner:ruisutil::ArcMutBox::new(CtxInner {
             sended: false,
             conn: None,
             ctrl: control,
@@ -93,21 +99,15 @@ impl Context {
             heads: None,
             bodys: None,
             data: HashMap::new(),
-        });
-        Self {
-            ptr: (&*inr) as *const CtxInner as u64,
-            inner: inr,
+        }),
         }
-    }
-    unsafe fn inners<'a>(&'a self) -> &'a mut CtxInner {
-        &mut *(self.ptr as *mut CtxInner)
     }
 
     pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
         self.inner.data.get(&String::from(s))
     }
     pub fn put_data(&self, s: &str, v: Vec<u8>) {
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         ins.data.insert(String::from(s), v);
     }
 
@@ -120,7 +120,7 @@ impl Context {
         panic!("conn?");
     } */
     pub fn own_conn(&self) -> TcpStream {
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         if let Some(v) = std::mem::replace(&mut ins.conn, None) {
             return v;
         }
@@ -132,7 +132,7 @@ impl Context {
     pub fn command(&self) -> &str {
         self.inner.cmds.as_str()
     }
-    pub fn get_args<'a>(&'a self) -> Option<&'a QString> {
+    pub fn get_args(&'a self) -> Option<&'a QString> {
         if let Some(v) = &self.inner.args {
             Some(v)
         } else {
@@ -157,7 +157,7 @@ impl Context {
         self.args.unwrap().add_str(origin)
     } */
     pub fn add_arg(&mut self, name: &str, value: &str) {
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         if let Some(v) = &mut ins.args {
             v.add_pair((name, value));
         } else {
@@ -171,15 +171,33 @@ impl Context {
         &self.inner.bodys
     }
     pub fn own_heads(&self) -> Option<Box<[u8]>> {
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         std::mem::replace(&mut ins.heads, None)
     }
     pub fn own_bodys(&self) -> Option<Box<[u8]>> {
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         std::mem::replace(&mut ins.bodys, None)
     }
     pub fn is_sended(&self) -> bool {
         self.inner.sended
+    }
+    pub fn head_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match &self.inner.heads {
+            None => Err(ruisutil::ioerr("heads nil", None)),
+            Some(v) => match serde_json::from_slice(v) {
+                Ok(vs) => Ok(vs),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
+    }
+    pub fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match &self.inner.bodys {
+            None => Err(ruisutil::ioerr("bodys nil", None)),
+            Some(v) => match serde_json::from_slice(v) {
+                Ok(vs) => Ok(vs),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
     }
 
     pub async fn response(
@@ -198,7 +216,7 @@ impl Context {
         if self.inner.sended {
             return Err(ruisutil::ioerr("already responsed!", None));
         }
-        let ins = unsafe { self.inners() };
+        let ins = unsafe { self.inner.muts() };
         ins.sended = true;
         let mut res = ResInfoV1::new();
         res.code = code;

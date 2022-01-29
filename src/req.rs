@@ -234,6 +234,15 @@ impl<'a> Response {
     pub fn own_bodys(&mut self) -> Option<Box<[u8]>> {
         std::mem::replace(&mut self.bodys, None)
     }
+    pub fn head_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match &self.heads {
+            None => Err(ruisutil::ioerr("heads nil", None)),
+            Some(v) => match serde_json::from_slice(v) {
+                Ok(vs) => Ok(vs),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
+    }
     pub fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
         match &self.bodys {
             None => Err(ruisutil::ioerr("bodys nil", None)),
