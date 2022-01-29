@@ -26,7 +26,7 @@ pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::
     if (info.lenBody) as u64 > MaxBodys {
         return Err(ruisutil::ioerr("bytes3 out limit!!", None));
     }
-    let mut rt = Context::new(info.control);
+    let rt = Context::new(info.control);
     let ins = unsafe { rt.inner.muts() };
     let lnsz = info.lenCmd as usize;
     if lnsz > 0 {
