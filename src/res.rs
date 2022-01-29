@@ -2,6 +2,7 @@ use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 
 use async_std::net::TcpStream;
 use qstring::QString;
+use serde::Serialize;
 
 pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
 pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
@@ -230,6 +231,12 @@ impl Context {
     }
     pub async fn res_string(&self, code: i32, s: &str) -> io::Result<()> {
         self.res_bytes(code, s.as_bytes()).await
+    }
+    pub async fn res_json<T: Serialize>(&self, code: i32, v: &T) -> io::Result<()> {
+        match serde_json::to_string(v) {
+            Ok(body) => self.res_string(code, body.as_str()).await,
+            Err(e) => Err(ruisutil::ioerr("not found conn", None)),
+        }
     }
 }
 

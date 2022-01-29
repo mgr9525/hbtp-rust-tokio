@@ -233,4 +233,10 @@ impl Response {
     pub fn own_bodys(&mut self) -> Option<Box<[u8]>> {
         std::mem::replace(&mut self.bodys, None)
     }
+    /* pub fn body_json<T:Deserialize<'a>>(&self)->Option<T>{
+      match &self.bodys{
+        None=>None,
+        Some(v)=>serde_json::from_slice(v)
+      }
+    } */
 }

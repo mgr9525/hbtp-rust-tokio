@@ -2,6 +2,8 @@
 extern crate async_std;
 extern crate futures;
 extern crate qstring;
+extern crate serde;
+extern crate serde_json;
 extern crate ruisutil;
 
 use std::{
