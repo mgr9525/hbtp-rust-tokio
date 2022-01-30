@@ -67,7 +67,7 @@ pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::
 } */
 
 pub struct Context {
-  inner:ruisutil::ArcMutBox<CtxInner>,
+  inner:ruisutil::ArcMut<CtxInner>,
 }
 impl Clone for Context {
     fn clone(&self) -> Self {
@@ -90,7 +90,7 @@ struct CtxInner {
 impl<'a> Context {
     fn new(control: i32) -> Self {
         Self {
-          inner:ruisutil::ArcMutBox::new(CtxInner {
+          inner:ruisutil::ArcMut::new(CtxInner {
             sended: false,
             conn: None,
             ctrl: control,
