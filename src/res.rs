@@ -2,7 +2,7 @@ use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
 
 use async_std::net::TcpStream;
 use qstring::QString;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
 pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
@@ -67,7 +67,7 @@ pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::
 } */
 
 pub struct Context {
-  inner:ruisutil::ArcMut<CtxInner>,
+    inner: ruisutil::ArcMut<CtxInner>,
 }
 impl Clone for Context {
     fn clone(&self) -> Self {
@@ -90,16 +90,16 @@ struct CtxInner {
 impl<'a> Context {
     fn new(control: i32) -> Self {
         Self {
-          inner:ruisutil::ArcMut::new(CtxInner {
-            sended: false,
-            conn: None,
-            ctrl: control,
-            cmds: String::new(),
-            args: None,
-            heads: None,
-            bodys: None,
-            data: HashMap::new(),
-        }),
+            inner: ruisutil::ArcMut::new(CtxInner {
+                sended: false,
+                conn: None,
+                ctrl: control,
+                cmds: String::new(),
+                args: None,
+                heads: None,
+                bodys: None,
+                data: HashMap::new(),
+            }),
         }
     }
 
@@ -125,6 +125,14 @@ impl<'a> Context {
             return v;
         }
         panic!("conn?");
+    }
+    pub fn peer_addr(&self) -> io::Result<String> {
+        if let Some(conn) = &self.inner.conn {
+            let addr = conn.peer_addr()?;
+            Ok(addr.to_string())
+        } else {
+            Err(ruisutil::ioerr("can't get addr", None))
+        }
     }
     pub fn control(&self) -> i32 {
         self.inner.ctrl
