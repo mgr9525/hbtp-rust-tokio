@@ -2,33 +2,27 @@
 extern crate async_std;
 extern crate futures;
 extern crate qstring;
+extern crate ruisutil;
 extern crate serde;
 extern crate serde_json;
-extern crate ruisutil;
 
 use std::{
-    any,
-    borrow::{BorrowMut, Cow},
     collections::{HashMap, LinkedList},
-    io, mem,
-    pin::Pin,
-    ptr,
-    sync::{Arc, RwLock},
-    thread,
-    time::{Duration, SystemTime},
-    usize,
+    io,
+    time::Duration,
 };
 
-use async_std::prelude::*;
 use async_std::{
     net::{TcpListener, TcpStream},
     task,
 };
-use futures::future::{BoxFuture, Future, FutureExt};
-use qstring::QString;
+use async_std::{prelude::*, sync::RwLock};
+use futures::future::{BoxFuture, Future};
+
 pub use req::Request;
 pub use req::Response;
 pub use res::Context;
+pub use res::LimitConfig;
 // pub use res::CtxInner;
 
 mod req;
@@ -36,13 +30,13 @@ mod res;
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, mem, pin::Pin, sync::Arc, thread, time::Duration};
+    use std::{thread, time::Duration};
 
     use async_std::task;
-    use futures::future::FutureExt;
+
     use qstring::QString;
 
-    use crate::{AsyncFnPtr, Engine, Request};
+    use crate::{Engine, Request};
 
     /* #[test]
     fn it_works() {
@@ -93,7 +87,7 @@ mod tests {
         // let cb = move |ctx: &mut crate::Context| testFun(ctx);
         // let fun = Box::new(cb);
         // let func = |ctx| Box::pin(testFun(ctx));
-        serv.reg_fun(1, testFun);
+        serv.reg_fun(1, testFun, None);
         task::block_on(Engine::run(serv));
     }
     async fn testFun(c: crate::Context) -> std::io::Result<()> {
@@ -176,12 +170,13 @@ pub fn controller(args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[derive(Clone)]
 pub struct Engine {
-    inner: Arc<Inner>,
-    ptr: u64,
+    inner: ruisutil::ArcMut<Inner>,
 }
 struct Inner {
     ctx: ruisutil::Context,
+    limit: LimitConfig,
     fns: RwLock<HashMap<i32, LinkedList<AsyncFnPtr>>>,
+    lmts: RwLock<HashMap<i32, LimitConfig>>,
     addr: String,
     lsr: Option<TcpListener>,
 }
@@ -198,27 +193,27 @@ impl Drop for Inner {
 }
 impl Engine {
     pub fn new(ctx: Option<ruisutil::Context>, addr: &str) -> Self {
-        let inr = Arc::new(Inner {
-            ctx: ruisutil::Context::background(ctx),
-            fns: RwLock::new(HashMap::new()),
-            addr: String::from(addr),
-            lsr: None,
-        });
         Self {
-            ptr: (&*inr) as *const Inner as u64,
-            inner: inr,
+            inner: ruisutil::ArcMut::new(Inner {
+                ctx: ruisutil::Context::background(ctx),
+                fns: RwLock::new(HashMap::new()),
+                lmts: RwLock::new(HashMap::new()),
+                addr: String::from(addr),
+                lsr: None,
+                limit: LimitConfig::default(),
+            }),
         }
     }
-    unsafe fn inners<'a>(&'a self) -> &'a mut Inner {
-        &mut *(self.ptr as *mut Inner)
+    pub fn set_limit(&self, limit: LimitConfig) {
+        unsafe { self.inner.muts().limit = limit };
     }
     pub fn stop(&self) {
-        unsafe { self.inners().lsr = None };
+        unsafe { self.inner.muts().lsr = None };
         self.inner.ctx.stop();
     }
     pub async fn run(self) -> io::Result<()> {
         let lsr = TcpListener::bind(self.inner.addr.as_str()).await?;
-        unsafe { self.inners().lsr = Some(lsr) };
+        unsafe { self.inner.muts().lsr = Some(lsr) };
         let c = self.clone();
         task::spawn(async move {
             c.runs().await;
@@ -251,13 +246,21 @@ impl Engine {
             }
         }
     }
+    pub async fn get_limit(&self, k: i32) -> LimitConfig {
+        let lkv = self.inner.lmts.read().await;
+        match lkv.get(&k) {
+            Some(v) => v.clone(),
+            None => self.inner.limit.clone(),
+        }
+    }
     async fn run_cli(self, conn: TcpStream) {
-        match res::parse_context(&self.inner.ctx, conn).await {
+        match Context::parse_conn(&self.inner.ctx, &self, conn).await {
             Err(e) => println!("ParseContext err:{}", e),
             Ok(res) => {
                 // println!("control:{}", res.control());
                 let mut fncs = None;
-                if let Ok(lkv) = self.inner.fns.read() {
+                {
+                    let lkv = self.inner.fns.read().await;
                     if let Some(ls) = lkv.get(&res.control()) {
                         let mut vs = Vec::with_capacity(ls.len());
                         let mut itr = ls.iter();
@@ -297,7 +300,7 @@ impl Engine {
         }
     }
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
-    pub fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F)
+    pub async fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F, lmto: Option<LimitConfig>)
     where
         F: Future<Output = io::Result<()>> + Send + 'static,
     {
@@ -305,7 +308,8 @@ impl Engine {
         let fnc = AsyncFnPtr {
             func: Box::new(move |c: Context| Box::pin(f(c))),
         };
-        if let Ok(mut lkv) = self.inner.fns.write() {
+        {
+            let mut lkv = self.inner.fns.write().await;
             if let Some(v) = lkv.get_mut(&control) {
                 v.push_back(fnc);
             } else {
@@ -313,6 +317,10 @@ impl Engine {
                 v.push_back(fnc);
                 lkv.insert(control, v);
             }
+        }
+        if let Some(v) = lmto {
+            let mut lkv = self.inner.lmts.write().await;
+            lkv.insert(control, v);
         }
     }
 }

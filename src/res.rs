@@ -4,79 +4,16 @@ use async_std::net::TcpStream;
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
-pub const MaxOther: u64 = 1024 * 1024 * 20; //20M
-pub const MaxHeads: u64 = 1024 * 1024 * 100; //100M
-pub const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
-
-pub async fn parse_context(ctx: &ruisutil::Context, mut conn: TcpStream) -> io::Result<Context> {
-    let mut info = MsgInfo::new();
-    let infoln = mem::size_of::<MsgInfo>();
-    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
-    let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
-    ruisutil::byte2struct(&mut info, &bts[..])?;
-    if info.version != 1 {
-        return Err(ruisutil::ioerr("not found version!", None));
-    }
-    if (info.lenCmd + info.lenArg) as u64 > MaxOther {
-        return Err(ruisutil::ioerr("bytes1 out limit!!", None));
-    }
-    if (info.lenHead) as u64 > MaxHeads {
-        return Err(ruisutil::ioerr("bytes2 out limit!!", None));
-    }
-    if (info.lenBody) as u64 > MaxBodys {
-        return Err(ruisutil::ioerr("bytes3 out limit!!", None));
-    }
-    let rt = Context::new(info.control);
-    let ins = unsafe { rt.inner.muts() };
-    let lnsz = info.lenCmd as usize;
-    if lnsz > 0 {
-        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
-        ins.cmds = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(ruisutil::ioerr("cmd err", None)),
-            Ok(v) => String::from(v),
-        };
-    }
-    let lnsz = info.lenArg as usize;
-    if lnsz > 0 {
-        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
-        let args = match std::str::from_utf8(&bts[..]) {
-            Err(e) => return Err(ruisutil::ioerr("args err", None)),
-            Ok(v) => String::from(v),
-        };
-        ins.args = Some(QString::from(args.as_str()));
-    }
-    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
-    let lnsz = info.lenHead as usize;
-    if lnsz > 0 {
-        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
-        ins.heads = Some(bts);
-    }
-    let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
-    let lnsz = info.lenBody as usize;
-    if lnsz > 0 {
-        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
-        ins.bodys = Some(bts);
-    }
-    ins.conn = Some(conn);
-    Ok(rt)
-}
-
 /* fn callfun(fun: &ConnFun, ctx: &mut Context) {
   std::panic::catch_unwind(|| println!("callfun catch panic"));
   fun(ctx);
 } */
 
+#[derive(Clone)]
 pub struct Context {
-    inner: ruisutil::ArcMut<CtxInner>,
+    inner: ruisutil::ArcMut<Inner>,
 }
-impl Clone for Context {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-struct CtxInner {
+struct Inner {
     sended: bool,
     conn: Option<TcpStream>,
     ctrl: i32,
@@ -84,13 +21,14 @@ struct CtxInner {
     args: Option<QString>,
     heads: Option<Box<[u8]>>,
     bodys: Option<Box<[u8]>>,
+    body_len: usize,
 
     data: HashMap<String, Vec<u8>>,
 }
 impl<'a> Context {
-    fn new(control: i32) -> Self {
+    fn new(control: i32, byln: usize) -> Self {
         Self {
-            inner: ruisutil::ArcMut::new(CtxInner {
+            inner: ruisutil::ArcMut::new(Inner {
                 sended: false,
                 conn: None,
                 ctrl: control,
@@ -98,10 +36,71 @@ impl<'a> Context {
                 args: None,
                 heads: None,
                 bodys: None,
+                body_len: byln,
                 data: HashMap::new(),
             }),
         }
     }
+
+    pub async fn parse_conn(
+        ctx: &ruisutil::Context,
+        egn: &crate::Engine,
+        mut conn: TcpStream,
+    ) -> io::Result<Self> {
+        let mut info = MsgInfo::new();
+        let infoln = std::mem::size_of::<MsgInfo>();
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
+        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
+        ruisutil::byte2struct(&mut info, &bts[..])?;
+        if info.version != 1 {
+            return Err(ruisutil::ioerr("not found version!", None));
+        }
+        let cfg=egn.get_limit(info.control).await;
+        if (info.len_cmd + info.len_arg) as u64 > cfg.max_ohther {
+            return Err(ruisutil::ioerr("bytes1 out limit!!", None));
+        }
+        if (info.len_head) as u64 > cfg.max_heads {
+            return Err(ruisutil::ioerr("bytes2 out limit!!", None));
+        }
+        if (info.len_body) as u64 > cfg.max_bodys {
+            return Err(ruisutil::ioerr("bytes3 out limit!!", None));
+        }
+        let rt = Self::new(info.control, info.len_body as usize);
+        let ins = unsafe { rt.inner.muts() };
+        let lnsz = info.len_cmd as usize;
+        if lnsz > 0 {
+            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
+            ins.cmds = match std::str::from_utf8(&bts[..]) {
+                Err(e) => return Err(ruisutil::ioerr("cmd err", None)),
+                Ok(v) => String::from(v),
+            };
+        }
+        let lnsz = info.len_arg as usize;
+        if lnsz > 0 {
+            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            let args = match std::str::from_utf8(&bts[..]) {
+                Err(e) => return Err(ruisutil::ioerr("args err", None)),
+                Ok(v) => String::from(v),
+            };
+            ins.args = Some(QString::from(args.as_str()));
+        }
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
+        let lnsz = info.len_head as usize;
+        if lnsz > 0 {
+            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            ins.heads = Some(bts);
+        }
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
+        let lnsz = info.len_body as usize;
+        if lnsz > 0 {
+            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            ins.bodys = Some(bts);
+        }
+        ins.conn = Some(conn);
+        Ok(rt)
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
 
     pub fn get_data(&self, s: &str) -> Option<&Vec<u8>> {
         self.inner.data.get(&String::from(s))
@@ -229,10 +228,10 @@ impl<'a> Context {
         let mut res = ResInfoV1::new();
         res.code = code;
         if let Some(v) = hds {
-            res.lenHead = v.len() as u32;
+            res.len_head = v.len() as u32;
         }
         if let Some(v) = bds {
-            res.lenBody = v.len() as u32;
+            res.len_body = v.len() as u32;
         }
         if let Some(conn) = &mut ins.conn {
             let bts = ruisutil::struct2byte(&res);
@@ -271,35 +270,52 @@ impl<'a> Context {
 pub struct MsgInfo {
     pub version: u16,
     pub control: i32,
-    pub lenCmd: u16,
-    pub lenArg: u16,
-    pub lenHead: u32,
-    pub lenBody: u32,
+    pub len_cmd: u16,
+    pub len_arg: u16,
+    pub len_head: u32,
+    pub len_body: u32,
 }
 impl MsgInfo {
     pub fn new() -> Self {
         Self {
             version: 0,
             control: 0,
-            lenCmd: 0,
-            lenArg: 0,
-            lenHead: 0,
-            lenBody: 0,
+            len_cmd: 0,
+            len_arg: 0,
+            len_head: 0,
+            len_body: 0,
         }
     }
 }
 #[repr(C, packed)]
 pub struct ResInfoV1 {
     pub code: i32,
-    pub lenHead: u32,
-    pub lenBody: u32,
+    pub len_head: u32,
+    pub len_body: u32,
 }
 impl ResInfoV1 {
     pub fn new() -> Self {
         Self {
             code: 0,
-            lenHead: 0,
-            lenBody: 0,
+            len_head: 0,
+            len_body: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LimitConfig {
+    pub max_ohther: u64,
+    pub max_heads: u64,
+    pub max_bodys: u64,
+}
+
+impl Default for LimitConfig {
+    fn default() -> Self {
+        Self {
+            max_ohther: 1024 * 1024 * 2, //2M
+            max_heads: 1024 * 1024 * 10, //10M
+            max_bodys: 1024 * 1024 * 50, //50M
         }
     }
 }

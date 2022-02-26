@@ -20,6 +20,7 @@ pub struct Request {
     args: Option<QString>,
 
     tmout: Duration,
+    limit: LimitConfig,
 }
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
@@ -33,7 +34,11 @@ impl Request {
             args: None,
 
             tmout: Duration::from_secs(30),
+            limit: LimitConfig::default(),
         }
+    }
+    pub fn set_limit(&mut self,limit:LimitConfig){
+        self.limit=limit;
     }
     pub fn newcmd(addr: &str, control: i32, s: &str) -> Self {
         let mut c = Self::new(addr, control);
@@ -110,22 +115,22 @@ impl Request {
         let mut reqs = MsgInfo::new();
         reqs.version = 1;
         reqs.control = self.ctrl;
-        reqs.lenCmd = self.cmds.len() as u16;
-        reqs.lenArg = args.len() as u16;
+        reqs.len_cmd = self.cmds.len() as u16;
+        reqs.len_arg = args.len() as u16;
         if let Some(v) = hds {
-            reqs.lenHead = v.len() as u32;
+            reqs.len_head = v.len() as u32;
         }
         if let Some(v) = bds {
-            reqs.lenBody = v.len() as u32;
+            reqs.len_body = v.len() as u32;
         }
         let bts = ruisutil::struct2byte(&reqs);
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
         ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
-        if reqs.lenCmd > 0 {
+        if reqs.len_cmd > 0 {
             let bts = self.cmds.as_bytes();
             ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
         }
-        if reqs.lenArg > 0 {
+        if reqs.len_arg > 0 {
             let bts = args.as_bytes();
             ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
         }
@@ -145,22 +150,22 @@ impl Request {
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
         let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        if (info.lenHead) as u64 > MaxHeads {
+        if (info.len_head) as u64 > self.limit.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        if (info.lenBody) as u64 > MaxBodys {
+        if (info.len_body) as u64 > self.limit.max_bodys {
             return Err(ruisutil::ioerr("bytes3 out limit!!", None));
         }
         let mut rt = Response::new();
         rt.code = info.code;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
-        let lnsz = info.lenHead as usize;
+        let lnsz = info.len_head as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
             rt.heads = Some(bts);
         }
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(50));
-        let lnsz = info.lenBody as usize;
+        let lnsz = info.len_body as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
             rt.bodys = Some(bts);
