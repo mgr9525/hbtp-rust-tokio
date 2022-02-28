@@ -22,7 +22,7 @@ use futures::future::{BoxFuture, Future};
 pub use req::Request;
 pub use req::Response;
 pub use res::Context;
-pub use res::LimitConfig;
+pub use res::{LmtMaxConfig, LmtTmConfig};
 // pub use res::CtxInner;
 
 mod req;
@@ -136,7 +136,7 @@ mod tests {
         let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(5));
         while !ctx.done() {
             println!("running");
-            thread::sleep_ms(500);
+            thread::sleep(Duration::from_millis(500));
         }
         println!("end!!!");
     }
@@ -174,9 +174,10 @@ pub struct Engine {
 }
 struct Inner {
     ctx: ruisutil::Context,
-    limit: LimitConfig,
+    lmt_tm: LmtTmConfig,
+    lmt_max: LmtMaxConfig,
     fns: RwLock<HashMap<i32, LinkedList<AsyncFnPtr>>>,
-    lmts: RwLock<HashMap<i32, LimitConfig>>,
+    lmts: RwLock<HashMap<i32, LmtMaxConfig>>,
     addr: String,
     lsr: Option<TcpListener>,
 }
@@ -200,12 +201,16 @@ impl Engine {
                 lmts: RwLock::new(HashMap::new()),
                 addr: String::from(addr),
                 lsr: None,
-                limit: LimitConfig::default(),
+                lmt_tm: LmtTmConfig::default(),
+                lmt_max: LmtMaxConfig::default(),
             }),
         }
     }
-    pub fn set_limit(&self, limit: LimitConfig) {
-        unsafe { self.inner.muts().limit = limit };
+    pub fn set_lmt_tm(&self, limit: LmtTmConfig) {
+        unsafe { self.inner.muts().lmt_tm = limit };
+    }
+    pub fn set_lmt_max(&self, limit: LmtMaxConfig) {
+        unsafe { self.inner.muts().lmt_max = limit };
     }
     pub fn stop(&self) {
         unsafe { self.inner.muts().lsr = None };
@@ -246,11 +251,15 @@ impl Engine {
             }
         }
     }
-    pub async fn get_limit(&self, k: i32) -> LimitConfig {
+
+    pub async fn get_lmt_tm(&self) -> &LmtTmConfig {
+        &self.inner.lmt_tm
+    }
+    pub async fn get_lmt_max(&self, k: i32) -> LmtMaxConfig {
         let lkv = self.inner.lmts.read().await;
         match lkv.get(&k) {
             Some(v) => v.clone(),
-            None => self.inner.limit.clone(),
+            None => self.inner.lmt_max.clone(),
         }
     }
     async fn run_cli(self, conn: TcpStream) {
@@ -300,7 +309,7 @@ impl Engine {
         }
     }
     // pub fn reg_fun(&mut self, control: i32, f: AsyncFnPtr) {
-    pub async fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F, lmto: Option<LimitConfig>)
+    pub async fn reg_fun<F>(&self, control: i32, f: fn(Context) -> F, lmto: Option<LmtMaxConfig>)
     where
         F: Future<Output = io::Result<()>> + Send + 'static,
     {

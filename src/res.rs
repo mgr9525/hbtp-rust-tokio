@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io, mem, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, time::Duration};
 
 use async_std::net::TcpStream;
 use qstring::QString;
@@ -49,13 +49,14 @@ impl<'a> Context {
     ) -> io::Result<Self> {
         let mut info = MsgInfo::new();
         let infoln = std::mem::size_of::<MsgInfo>();
-        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(10));
+        let lmt_tm = egn.get_lmt_tm().await;
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_ohther);
         let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
         if info.version != 1 {
             return Err(ruisutil::ioerr("not found version!", None));
         }
-        let cfg=egn.get_limit(info.control).await;
+        let cfg = egn.get_lmt_max(info.control).await;
         if (info.len_cmd + info.len_arg) as u64 > cfg.max_ohther {
             return Err(ruisutil::ioerr("bytes1 out limit!!", None));
         }
@@ -71,7 +72,7 @@ impl<'a> Context {
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
             ins.cmds = match std::str::from_utf8(&bts[..]) {
-                Err(e) => return Err(ruisutil::ioerr("cmd err", None)),
+                Err(_) => return Err(ruisutil::ioerr("cmd err", None)),
                 Ok(v) => String::from(v),
             };
         }
@@ -79,18 +80,18 @@ impl<'a> Context {
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
             let args = match std::str::from_utf8(&bts[..]) {
-                Err(e) => return Err(ruisutil::ioerr("args err", None)),
+                Err(_) => return Err(ruisutil::ioerr("args err", None)),
                 Ok(v) => String::from(v),
             };
             ins.args = Some(QString::from(args.as_str()));
         }
-        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(30));
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
             ins.heads = Some(bts);
         }
-        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), Duration::from_secs(50));
+        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_bodys);
         let lnsz = info.len_body as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
@@ -260,7 +261,7 @@ impl<'a> Context {
     pub async fn res_json<T: Serialize>(&self, code: i32, v: &T) -> io::Result<()> {
         match serde_json::to_string(v) {
             Ok(body) => self.res_string(code, body.as_str()).await,
-            Err(e) => Err(ruisutil::ioerr("not found conn", None)),
+            Err(e) => Err(ruisutil::ioerr(format!("json format err:{}", e), None)),
         }
     }
 }
@@ -304,18 +305,35 @@ impl ResInfoV1 {
 }
 
 #[derive(Clone)]
-pub struct LimitConfig {
+pub struct LmtMaxConfig {
     pub max_ohther: u64,
     pub max_heads: u64,
     pub max_bodys: u64,
 }
 
-impl Default for LimitConfig {
+impl Default for LmtMaxConfig {
     fn default() -> Self {
         Self {
             max_ohther: 1024 * 1024 * 2, //2M
             max_heads: 1024 * 1024 * 10, //10M
             max_bodys: 1024 * 1024 * 50, //50M
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LmtTmConfig {
+    pub tm_ohther: Duration,
+    pub tm_heads: Duration,
+    pub tm_bodys: Duration,
+}
+
+impl Default for LmtTmConfig {
+    fn default() -> Self {
+        Self {
+            tm_ohther: Duration::from_secs(10),
+            tm_heads: Duration::from_secs(30),
+            tm_bodys: Duration::from_secs(50),
         }
     }
 }

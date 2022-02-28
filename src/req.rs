@@ -1,10 +1,7 @@
 use std::{io, mem, net::ToSocketAddrs, time::Duration};
 
+use async_std::net::TcpStream;
 use async_std::prelude::*;
-use async_std::{
-    net::{TcpListener, TcpStream},
-    task,
-};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
@@ -201,7 +198,7 @@ impl Request {
     ) -> io::Result<Response> {
         match serde_json::to_string(v) {
             Ok(body) => self.do_string(hds, body.as_str()).await,
-            Err(e) => Err(ruisutil::ioerr("not found conn", None)),
+            Err(e) => Err(ruisutil::ioerr(format!("json format err:{}", e), None)),
         }
     }
 }
