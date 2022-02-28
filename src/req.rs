@@ -17,7 +17,7 @@ pub struct Request {
     args: Option<QString>,
 
     tmout: Duration,
-    // limit: LimitConfig,
+    lmt_tm: LmtTmConfig,
 }
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
@@ -31,12 +31,12 @@ impl Request {
             args: None,
 
             tmout: Duration::from_secs(30),
-            // limit: LimitConfig::default(),
+            lmt_tm: LmtTmConfig::default(),
         }
     }
-    /* pub fn set_limit(&mut self,limit:LimitConfig){
-        self.limit=limit;
-    } */
+    pub fn set_lmt_tm(&mut self, limit: LmtTmConfig) {
+        self.lmt_tm = limit;
+    }
     pub fn newcmd(addr: &str, control: i32, s: &str) -> Self {
         let mut c = Self::new(addr, control);
         c.command(s);
@@ -121,7 +121,7 @@ impl Request {
             reqs.len_body = v.len() as u32;
         }
         let bts = ruisutil::struct2byte(&reqs);
-        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
+        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
         if reqs.len_cmd > 0 {
             let bts = self.cmds.as_bytes();
@@ -132,11 +132,11 @@ impl Request {
             ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
         }
         if let Some(v) = hds {
-            let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
+            let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
             ruisutil::tcp_write_async(&ctx, &mut conn, v).await?;
         }
         if let Some(v) = bds {
-            let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(50));
+            let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_bodys);
             ruisutil::tcp_write_async(&ctx, &mut conn, v).await?;
         }
         Ok(conn)
@@ -144,7 +144,7 @@ impl Request {
     async fn response(&self, mut conn: TcpStream) -> io::Result<Response> {
         let mut info = ResInfoV1::new();
         let infoln = mem::size_of::<ResInfoV1>();
-        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
+        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
         /* if (info.len_head) as u64 > self.limit.max_heads {
@@ -155,13 +155,13 @@ impl Request {
         } */
         let mut rt = Response::new();
         rt.code = info.code;
-        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
+        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
             rt.heads = Some(bts);
         }
-        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(50));
+        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let lnsz = info.len_body as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
