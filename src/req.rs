@@ -19,6 +19,8 @@ pub struct Request {
     tmout: Duration,
     lmt_tm: LmtTmConfig,
 }
+const MaxHeads: u64 = 1024 * 1024 * 100; //100M
+const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
         Self {
@@ -147,12 +149,12 @@ impl Request {
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        /* if (info.len_head) as u64 > self.limit.max_heads {
+        if (info.len_head) as u64 > MaxHeads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        if (info.len_body) as u64 > self.limit.max_bodys {
+        if (info.len_body) as u64 > MaxBodys {
             return Err(ruisutil::ioerr("bytes3 out limit!!", None));
-        } */
+        }
         let mut rt = Response::new();
         rt.code = info.code;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
