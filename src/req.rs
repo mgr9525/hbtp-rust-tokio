@@ -20,7 +20,7 @@ pub struct Request {
     args: Option<QString>,
 
     tmout: Duration,
-    limit: LimitConfig,
+    // limit: LimitConfig,
 }
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
@@ -34,12 +34,12 @@ impl Request {
             args: None,
 
             tmout: Duration::from_secs(30),
-            limit: LimitConfig::default(),
+            // limit: LimitConfig::default(),
         }
     }
-    pub fn set_limit(&mut self,limit:LimitConfig){
+    /* pub fn set_limit(&mut self,limit:LimitConfig){
         self.limit=limit;
-    }
+    } */
     pub fn newcmd(addr: &str, control: i32, s: &str) -> Self {
         let mut c = Self::new(addr, control);
         c.command(s);
@@ -150,12 +150,12 @@ impl Request {
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(10));
         let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        if (info.len_head) as u64 > self.limit.max_heads {
+        /* if (info.len_head) as u64 > self.limit.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
         if (info.len_body) as u64 > self.limit.max_bodys {
             return Err(ruisutil::ioerr("bytes3 out limit!!", None));
-        }
+        } */
         let mut rt = Response::new();
         rt.code = info.code;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), Duration::from_secs(30));
@@ -194,7 +194,11 @@ impl Request {
     pub async fn do_string(&mut self, hds: Option<&[u8]>, s: &str) -> io::Result<Response> {
         self.do_bytes(hds, s.as_bytes()).await
     }
-    pub async fn do_json<T: Serialize>(&mut self, hds: Option<&[u8]>, v: &T) -> io::Result<Response> {
+    pub async fn do_json<T: Serialize>(
+        &mut self,
+        hds: Option<&[u8]>,
+        v: &T,
+    ) -> io::Result<Response> {
         match serde_json::to_string(v) {
             Ok(body) => self.do_string(hds, body.as_str()).await,
             Err(e) => Err(ruisutil::ioerr("not found conn", None)),
