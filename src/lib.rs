@@ -212,6 +212,19 @@ impl Engine {
     pub fn set_lmt_max(&self, limit: LmtMaxConfig) {
         unsafe { self.inner.muts().lmt_max = limit };
     }
+
+    pub async fn get_lmt_tm(&self) -> &LmtTmConfig {
+        &self.inner.lmt_tm
+    }
+    pub async fn get_lmt_max(&self, k: i32) -> LmtMaxConfig {
+        let lkv = self.inner.lmts.read().await;
+        match lkv.get(&k) {
+            Some(v) => v.clone(),
+            None => self.inner.lmt_max.clone(),
+        }
+    }
+
+    
     pub fn stop(&self) {
         unsafe { self.inner.muts().lsr = None };
         self.inner.ctx.stop();
@@ -249,17 +262,6 @@ impl Engine {
                     }
                 }
             }
-        }
-    }
-
-    pub async fn get_lmt_tm(&self) -> &LmtTmConfig {
-        &self.inner.lmt_tm
-    }
-    pub async fn get_lmt_max(&self, k: i32) -> LmtMaxConfig {
-        let lkv = self.inner.lmts.read().await;
-        match lkv.get(&k) {
-            Some(v) => v.clone(),
-            None => self.inner.lmt_max.clone(),
         }
     }
     async fn run_cli(self, conn: TcpStream) {
