@@ -32,7 +32,7 @@ impl Request {
             cmds: String::new(),
             args: None,
 
-            tmout: Duration::from_secs(30),
+            tmout: Duration::from_secs(5),
             lmt_tm: LmtTmConfig::default(),
         }
     }
@@ -81,28 +81,10 @@ impl Request {
             self.args = Some(QString::new(vec![(name, value)]));
         }
     }
-    async fn connect(&mut self) -> io::Result<TcpStream> {
-        match self.addr.as_str().to_socket_addrs() {
-            Err(e) => return Err(ruisutil::ioerr(format!("parse:{}", e), None)),
-            Ok(mut v) => loop {
-                if let Some(sa) = v.next() {
-                    // println!("connect to ip:{}", sa);
-                    if let Ok(conn) = std::net::TcpStream::connect_timeout(&sa, self.tmout.clone())
-                    {
-                        return Ok(TcpStream::from(conn));
-                    }
-                    /* if let Ok(conn) = TcpStream::connect(&sa).await {
-                        return Ok(conn);
-                    } */
-                } else {
-                    break;
-                }
-            },
-        };
-        Err(ruisutil::ioerr("not found ip", None))
-    }
     async fn send(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<TcpStream> {
-        let mut conn = self.connect().await?; //TcpStream::connect_timeout(&addr, self.tmout.clone())?;
+        let mut conn =
+            async_std::io::timeout(self.tmout.clone(), TcpStream::connect(self.addr.as_str()))
+                .await?;
         if self.sended {
             return Err(ruisutil::ioerr("already request!", None));
         }
