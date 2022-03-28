@@ -39,7 +39,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         };
         let c = Self {
             inner: ruisutil::ArcMut::new(Inner {
-                ctx: ctx.clone(),
+                ctx: ruisutil::Context::background(Some(ctx.clone())),
                 conn: conn,
                 shuted: false,
 
