@@ -59,7 +59,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             return Ok(());
         }
         self.inner.ctx.stop();
-        self.inner.msgs_sx.close();
+        self.inner.msgs_rx.close();
         let ins = unsafe { self.inner.muts() };
         ins.shuted = true;
         ins.conn.shutdown(std::net::Shutdown::Both)
