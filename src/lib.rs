@@ -28,6 +28,8 @@ pub use res::{LmtMaxConfig, LmtTmConfig};
 mod req;
 mod res;
 
+pub mod socks;
+
 #[cfg(test)]
 mod tests {
     use std::{thread, time::Duration};
