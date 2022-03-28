@@ -16,6 +16,7 @@ struct Inner<T: MessageRecv + Clone> {
     ctx: ruisutil::Context,
     conn: TcpStream,
     shuted: bool,
+    is_serv: bool,
     //check
     ctms: ruisutil::Timer,
     ctmout: ruisutil::Timer,
@@ -42,6 +43,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                 ctx: ruisutil::Context::background(Some(ctx.clone())),
                 conn: conn,
                 shuted: false,
+                is_serv: false,
 
                 ctms: ruisutil::Timer::new(Duration::from_secs(20)),
                 ctmout: ruisutil::Timer::new(Duration::from_secs(30)),
@@ -65,8 +67,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         ins.conn.shutdown(std::net::Shutdown::Both)
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&self, servs: bool) {
         self.inner.ctmout.reset();
+        unsafe { self.inner.muts().is_serv = servs };
         let c = self.clone();
         task::spawn(async move {
             c.run_send().await;
@@ -100,7 +103,16 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                     match ctrl {
                         0 => {
                             self.inner.ctmout.reset();
-                            println!("remote reply heart");
+                            let msg = msg::Messages {
+                                control: 0,
+                                cmds: Some("heart".into()),
+                                heads: None,
+                                bodys: None,
+                                bodybuf: None,
+                            };
+                            if let Err(e) = self.inner.msgs_sx.send(msg).await {
+                                println!("chan send err:{}", e)
+                            }
                         }
                         _ => {
                             let c = self.clone();
