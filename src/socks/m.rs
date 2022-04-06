@@ -150,11 +150,13 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         }
     }
     async fn run_check(&self) {
-        if self.inner.ctmout.tick() {
+        /* println!(
+            "m run_check:ctmout={}ms!!!--------------",
+            self.inner.ctmout.tmdur().as_millis()
+        ); */
+        if self.inner.ctmout.tmout() {
             let _ = self.stop();
-        }
-
-        if self.inner.ctms.tick() {
+        } else if self.inner.ctms.tick() {
             let msg = msg::Messages {
                 control: 0,
                 cmds: Some("heart".into()),
