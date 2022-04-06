@@ -60,10 +60,11 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         if self.inner.shuted {
             return Ok(());
         }
-        self.inner.ctx.stop();
-        self.inner.msgs_rx.close();
+        println!("msger conn will stop");
         let ins = unsafe { self.inner.muts() };
         ins.shuted = true;
+        self.inner.ctx.stop();
+        self.inner.msgs_rx.close();
         ins.conn.shutdown(std::net::Shutdown::Both)
     }
 
@@ -103,15 +104,17 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                     match ctrl {
                         0 => {
                             self.inner.ctmout.reset();
-                            let msg = msg::Messages {
-                                control: 0,
-                                cmds: Some("heart".into()),
-                                heads: None,
-                                bodys: None,
-                                bodybuf: None,
-                            };
-                            if let Err(e) = self.inner.msgs_sx.send(msg).await {
-                                println!("chan send err:{}", e)
+                            if self.inner.is_serv {
+                                let msg = msg::Messages {
+                                    control: 0,
+                                    cmds: Some("heart".into()),
+                                    heads: None,
+                                    bodys: None,
+                                    bodybuf: None,
+                                };
+                                if let Err(e) = self.inner.msgs_sx.send(msg).await {
+                                    println!("chan send err:{}", e)
+                                }
                             }
                         }
                         _ => {
@@ -156,7 +159,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         ); */
         if self.inner.ctmout.tmout() {
             let _ = self.stop();
-        } else if self.inner.ctms.tick() {
+        } else if !self.inner.is_serv && self.inner.ctms.tick() {
             let msg = msg::Messages {
                 control: 0,
                 cmds: Some("heart".into()),
