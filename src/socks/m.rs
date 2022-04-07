@@ -64,7 +64,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         let ins = unsafe { self.inner.muts() };
         ins.shuted = true;
         self.inner.ctx.stop();
-        self.inner.msgs_rx.close();
+        self.inner.msgs_sx.close();
         ins.conn.shutdown(std::net::Shutdown::Both)
     }
 
@@ -96,8 +96,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             match msg::parse_msg(&self.inner.ctx, &mut ins.conn).await {
                 Err(e) => {
                     println!("Messager parse_msg err:{:?}", e);
-                    let _ = self.stop();
-                    task::sleep(Duration::from_millis(100)).await;
+                    // let _ = self.stop();
+                    self.inner.ctx.stop();
+                    task::sleep(Duration::from_millis(200)).await;
                 }
                 Ok(v) => {
                     let ctrl = v.control;
@@ -124,7 +125,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                                 if let Err(e) = rc.on_msg(v).await {
                                     println!("Messager recv on_msg (ctrl:{}) err:{}", ctrl, e);
                                     if e.kind() == io::ErrorKind::Interrupted {
-                                        let _ = c.stop();
+                                        // let _ = c.stop();
+                                        c.inner.ctx.stop();
+                                        task::sleep(Duration::from_millis(200)).await;
                                     }
                                 }
                             });
@@ -140,8 +143,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             match self.inner.msgs_rx.recv().await {
                 Err(e) => {
                     println!("run_send chan recv err:{}", e);
-                    let _ = self.stop();
-                    task::sleep(Duration::from_millis(100)).await;
+                    // let _ = self.stop();
+                    self.inner.ctx.stop();
+                    task::sleep(Duration::from_millis(200)).await;
                 }
                 Ok(v) => {
                     if let Err(e) = msg::send_msgs(&self.inner.ctx, &mut ins.conn, v).await {
@@ -158,8 +162,13 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             self.inner.ctmout.tmdur().as_millis()
         ); */
         if self.inner.ctmout.tmout() {
-            let _ = self.stop();
-        } else if !self.inner.is_serv && self.inner.ctms.tick() {
+            // let _ = self.stop();
+            println!("msger heart timeout!!");
+            self.inner.ctx.stop();
+            return;
+        } 
+        
+        if !self.inner.is_serv && self.inner.ctms.tick() {
             let msg = msg::Messages {
                 control: 0,
                 cmds: Some("heart".into()),
