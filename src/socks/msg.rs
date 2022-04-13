@@ -68,7 +68,7 @@ pub async fn parse_msg(ctxs: &ruisutil::Context, conn: &mut TcpStream) -> io::Re
     let bts = ruisutil::tcp_read_async(ctxs, conn, 1).await?;
     if bts.len() < 1 || bts[0] != 0x8fu8 {
         return Err(ruisutil::ioerr(
-            format!("first byte err:{:?}", &bts[..]),
+            format!("second byte err:{:?}", &bts[..]),
             None,
         ));
     }
