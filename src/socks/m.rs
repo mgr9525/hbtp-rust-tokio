@@ -86,7 +86,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             self.run_check().await;
             task::sleep(Duration::from_millis(100)).await;
         }
-        let _ = self.stop();
+        if let Err(e) = self.stop() {
+            println!("Messager end stop err:{}", e);
+        }
         println!("Messager end run check");
     }
 
@@ -166,8 +168,8 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             println!("msger heart timeout!!");
             self.inner.ctx.stop();
             return;
-        } 
-        
+        }
+
         if !self.inner.is_serv && self.inner.ctms.tick() {
             let msg = msg::Messages {
                 control: 0,
