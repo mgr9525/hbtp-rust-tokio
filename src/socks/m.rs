@@ -178,7 +178,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                 bodys: None,
                 bodybuf: None,
             };
-            if let Err(e) = self.inner.msgs_sx.send(msg).await {
+            if let Err(e) = self.inner.msgs_sx.try_send(msg) {
                 println!("chan send err:{}", e);
             }
         }
