@@ -92,7 +92,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
         println!("Messager end run check");
     }
 
-    pub async fn run_recv(&self) {
+    async fn run_recv(&self) {
         let ins = unsafe { self.inner.muts() };
         while !self.inner.ctx.done() {
             match msg::parse_msg(&self.inner.ctx, &mut ins.conn).await {
