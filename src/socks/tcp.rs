@@ -8,11 +8,11 @@ use super::msg;
 pub type Senders = channel::Sender<msg::Messages>;
 
 #[derive(Clone)]
-pub struct Messager<T: MessageRecv + Clone + Sync + Send + 'static> {
-    inner: ruisutil::ArcMut<Inner<T>>,
+pub struct Messager {
+    inner: ruisutil::ArcMut<Inner>,
 }
 
-struct Inner<T: MessageRecv + Clone> {
+struct Inner {
     ctx: ruisutil::Context,
     conn: TcpStream,
     shuted: bool,
@@ -23,16 +23,19 @@ struct Inner<T: MessageRecv + Clone> {
     msgs_sx: channel::Sender<msg::Messages>,
     msgs_rx: channel::Receiver<msg::Messages>,
 
-    recver: T,
+    recver: Box<dyn MessageRecv + Send + Sync>,
 }
 
-impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
-    pub fn new(
+impl Messager {
+    pub fn new<T>(
         ctx: &ruisutil::Context,
         conn: TcpStream,
-        recver: &T,
+        recver: T,
         sndbufln: usize,
-    ) -> (Self, Senders) {
+    ) -> (Self, Senders)
+    where
+        T: MessageRecv + Send + Sync + 'static,
+    {
         let (sx, rx) = if sndbufln > 0 {
             channel::bounded::<msg::Messages>(sndbufln)
         } else {
@@ -50,7 +53,7 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                 msgs_sx: sx.clone(),
                 msgs_rx: rx,
 
-                recver: recver.clone(),
+                recver: Box::new(recver),
             }),
         };
         (c, sx)
@@ -122,9 +125,9 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
                         }
                         _ => {
                             let c = self.clone();
-                            let rc = self.inner.recver.clone();
+                            // let rc = self.inner.recver.clone();
                             task::spawn(async move {
-                                if let Err(e) = rc.on_msg(v).await {
+                                if let Err(e) = c.inner.recver.on_msg(v).await {
                                     println!("Messager recv on_msg (ctrl:{}) err:{}", ctrl, e);
                                     if e.kind() == io::ErrorKind::Interrupted {
                                         // let _ = c.stop();
@@ -183,8 +186,8 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
             }
         }
 
-        let rc = self.inner.recver.clone();
-        rc.on_check().await;
+        // let rc = self.inner.recver.clone();
+        self.inner.recver.on_check().await;
     }
 
     pub async fn send(&self, mv: msg::Messages) -> io::Result<()> {
@@ -197,8 +200,8 @@ impl<T: MessageRecv + Clone + Sync + Send + 'static> Messager<T> {
     }
 }
 
-pub trait MessageRecv: Clone {
-    fn on_check(self) -> BoxFuture<'static, ()>;
-    fn on_msg(self, msg: msg::Message) -> BoxFuture<'static, io::Result<()>>;
+pub trait MessageRecv {
+    fn on_check(&self) -> BoxFuture<'static, ()>;
+    fn on_msg(&self, msg: msg::Message) -> BoxFuture<'static, io::Result<()>>;
     // fn on_msg(self, msg: msg::Message) -> Pin<Box<dyn Future<Output = ()> + Sync + Send+'static>>;
 }

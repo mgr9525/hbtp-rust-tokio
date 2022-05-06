@@ -202,3 +202,9 @@ pub async fn send_msg_buf(
     ruisutil::tcp_write_async(ctxs, conn, &[0x8eu8, 0x8fu8]).await?;
     Ok(())
 }
+
+
+
+/* pub fn make_udp_packet_v1()->bytes::ByteBox{
+  // let rt=bytes::ByteBox::
+} */
