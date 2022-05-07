@@ -23,15 +23,15 @@ struct Inner {
 }
 
 impl UMsgerServ {
-    pub fn new<T>(ctx: &ruisutil::Context, addrs: String, recver: T, sndbufln: usize) -> Self
+    pub fn new<T>(ctx: &ruisutil::Context, addrs: String, recver: T) -> Self
     where
         T: IUMsgerServ + Send + Sync + 'static,
     {
-        let (sx, rx) = if sndbufln > 0 {
+        /* let (sx, rx) = if sndbufln > 0 {
             channel::bounded::<msg::Messages>(sndbufln)
         } else {
             channel::unbounded::<msg::Messages>()
-        };
+        }; */
         Self {
             inner: ruisutil::ArcMut::new(Inner {
                 ctx: ruisutil::Context::background(Some(ctx.clone())),
@@ -63,7 +63,6 @@ impl UMsgerServ {
         Ok(())
     }
     async fn run_recv(&self) {
-        let ins = unsafe { self.inner.muts() };
         while !self.inner.ctx.done() {
             if let Some(conn) = &self.inner.conn {
                 let mut buf = vec![0u8; 1500].into_boxed_slice();
@@ -229,5 +228,4 @@ pub trait IUMsgerServ {
     fn on_bts(&self, addrs: &SocketAddr, msg: bytes::ByteBox)
         -> BoxFuture<'static, io::Result<()>>;
     fn on_msg(&self, addrs: &SocketAddr, msg: msg::Messageu) -> BoxFuture<'static, io::Result<()>>;
-    // fn on_msg(self, msg: msg::Message) -> Pin<Box<dyn Future<Output = ()> + Sync + Send+'static>>;
 }
