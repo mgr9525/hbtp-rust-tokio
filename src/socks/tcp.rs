@@ -98,7 +98,7 @@ impl Messager {
     async fn run_recv(&self) {
         let ins = unsafe { self.inner.muts() };
         while !self.inner.ctx.done() {
-            match msg::parse_msg(&self.inner.ctx, &mut ins.conn).await {
+            match msg::tcps::parse_msg(&self.inner.ctx, &mut ins.conn).await {
                 Err(e) => {
                     println!("Messager parse_msg err:{:?}", e);
                     // let _ = self.stop();
@@ -153,7 +153,7 @@ impl Messager {
                     task::sleep(Duration::from_millis(200)).await;
                 }
                 Ok(v) => {
-                    if let Err(e) = msg::send_msgs(&self.inner.ctx, &mut ins.conn, v).await {
+                    if let Err(e) = msg::tcps::send_msgs(&self.inner.ctx, &mut ins.conn, v).await {
                         println!("run_send send_msgs err:{}", e);
                         task::sleep(Duration::from_millis(10)).await;
                     }
