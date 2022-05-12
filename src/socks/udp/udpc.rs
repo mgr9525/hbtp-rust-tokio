@@ -1,35 +1,27 @@
-use std::{collections::HashMap, io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use async_std::{
-    channel,
-    net::{ToSocketAddrs, UdpSocket},
-    sync::RwLock,
-};
+use async_std::net::UdpSocket;
 use futures::future::BoxFuture;
 use ruisutil::bytes;
 
-use crate::socks::msg;
-
-use super::udps::UdpMsgParse;
-
 #[derive(Clone)]
-pub struct UMsgerServ {
+pub struct UMsgerClient {
     inner: ruisutil::ArcMut<Inner>,
 }
 struct Inner {
     ctx: ruisutil::Context,
-    addrs: String,
+    addrs_re: String,
+    addrs_lc: String,
     conn: Option<UdpSocket>,
     shuted: bool,
 
-    mutis: RwLock<HashMap<SocketAddr, UdpMsgParse>>,
-    recver: Box<dyn IUMsgerServ + Send + Sync>,
+    recver: Box<dyn IUMsgerCli + Send + Sync>,
 }
 
-impl UMsgerServ {
-    pub fn new<T>(ctx: &ruisutil::Context, addrs: String, recver: T) -> Self
+impl UMsgerClient {
+    pub fn new<T>(ctx: &ruisutil::Context, addrs_re: String, addrs_lc: String, recver: T) -> Self
     where
-        T: IUMsgerServ + Send + Sync + 'static,
+        T: IUMsgerCli + Send + Sync + 'static,
     {
         /* let (sx, rx) = if sndbufln > 0 {
             channel::bounded::<msg::Messages>(sndbufln)
@@ -39,11 +31,11 @@ impl UMsgerServ {
         Self {
             inner: ruisutil::ArcMut::new(Inner {
                 ctx: ruisutil::Context::background(Some(ctx.clone())),
-                addrs: addrs,
+                addrs_re: addrs_re,
+                addrs_lc: addrs_lc,
                 conn: None,
                 shuted: false,
 
-                mutis: RwLock::new(HashMap::new()),
                 recver: Box::new(recver),
             }),
         }
@@ -58,27 +50,10 @@ impl UMsgerServ {
             self.inner.ctx.stop();
         }
     }
-    /* pub async fn remote_addr(&self) -> Option<SocketAddr> {
-        match &self.inner.conn {
-            None => None,
-            Some(v) => match v.peer_addr() {
-                Err(_) => None,
-                Ok(vs) => Some(vs),
-            },
-        }
-    } */
-    pub async fn connect<T: ToSocketAddrs>(&self, addr: T) -> io::Result<()> {
-        if let Some(v) = &self.inner.conn {
-            v.connect(addr).await?;
-        }
-        Ok(())
-    }
-    pub async fn run<T: ToSocketAddrs>(&self, addr: Option<T>) -> io::Result<()> {
+    pub async fn run(&self) -> async_std::io::Result<()> {
         let ins = unsafe { self.inner.muts() };
-        let conn = UdpSocket::bind(self.inner.addrs.as_str()).await?;
-        if let Some(v) = addr {
-            conn.connect(v).await?;
-        }
+        let conn = UdpSocket::bind(self.inner.addrs_lc.as_str()).await?;
+        conn.connect(self.inner.addrs_re.as_str()).await?;
         ins.conn = Some(conn);
         self.run_recv().await;
         self.stop();
@@ -121,10 +96,6 @@ impl UMsgerServ {
             return Err(ruisutil::ioerr("packet token err!!!", None));
         }
 
-        /* println!("parse packet ctrl:{}", pckt.ctrl);
-        print!("datas:");
-        ruisutil::print_hex(&pckt.data[..]);
-        println!(";"); */
         /*
           10-20: 无需按顺序(包小于1400)
           20-30: 需要重组,无需按顺序(包可大于1400)
@@ -205,59 +176,9 @@ impl UMsgerServ {
 
         Ok(())
     }
-
-    pub async fn remove(&self, src: &SocketAddr) {
-        let mut lkv = self.inner.mutis.write().await;
-        if let Some(v) = lkv.get(src) {
-            v.stop();
-        }
-        lkv.remove(src);
-    }
-
-    pub async fn send1bts(
-        &self,
-        data: bytes::ByteBox,
-        tks: Option<String>,
-        dist: Option<&SocketAddr>,
-    ) -> io::Result<()> {
-        if data.len() > 1200 {
-            return Err(ruisutil::ioerr("data len out packet", None));
-        }
-        let mut bts = msg::udps::packet_fmts(11, tks)?;
-        bts.push(data);
-        if let Some(conn) = &self.inner.conn {
-            if let Some(addr) = dist {
-                conn.send_to(&bts.to_bytes()[..], addr).await?;
-            } else {
-                conn.send(&bts.to_bytes()[..]).await?;
-            }
-        }
-        Ok(())
-    }
-    pub async fn send1msg(
-        &self,
-        data: msg::Messageus,
-        tks: Option<String>,
-        dist: Option<&SocketAddr>,
-    ) -> io::Result<()> {
-        let datas = msg::udps::msg_fmts(data)?;
-        if datas.len() > 1200 {
-            return Err(ruisutil::ioerr("msg len out packet", None));
-        }
-        let mut bts = msg::udps::packet_fmts(12, tks)?;
-        bts.push_all(&datas);
-        if let Some(conn) = &self.inner.conn {
-            if let Some(addr) = dist {
-                conn.send_to(&bts.to_bytes()[..], addr).await?;
-            } else {
-                conn.send(&bts.to_bytes()[..]).await?;
-            }
-        }
-        Ok(())
-    }
 }
 
-pub trait IUMsgerServ {
+pub trait IUMsgerCli {
     fn packet_err(&self, addrs: &SocketAddr) -> BoxFuture<'static, ()>;
     fn check_token(&self, addrs: &SocketAddr, tks: &Option<String>) -> BoxFuture<'static, bool>;
     fn on_bts(&self, addrs: &SocketAddr, msg: bytes::ByteBox)
