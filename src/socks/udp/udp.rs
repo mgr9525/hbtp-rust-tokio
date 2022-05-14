@@ -73,12 +73,9 @@ impl UMsgerServ {
         }
         Ok(())
     }
-    pub async fn run<T: ToSocketAddrs>(&self, addr: Option<T>) -> io::Result<()> {
+    pub async fn run(&self) -> io::Result<()> {
         let ins = unsafe { self.inner.muts() };
         let conn = UdpSocket::bind(self.inner.addrs.as_str()).await?;
-        if let Some(v) = addr {
-            conn.connect(v).await?;
-        }
         ins.conn = Some(conn);
         self.run_recv().await;
         self.stop();
