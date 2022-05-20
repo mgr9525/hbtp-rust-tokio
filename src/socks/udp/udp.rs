@@ -11,6 +11,8 @@ use ruisutil::bytes;
 use crate::socks::msg;
 
 use super::udps::UdpMsgParse;
+#[cfg(unix)]
+use std::os::unix::prelude::*;
 
 #[derive(Clone)]
 pub struct UMsgerServ {
@@ -51,13 +53,31 @@ impl UMsgerServ {
 
     pub fn stop(&self) {
         if !self.inner.shuted {
-            println!("msger conn will stop");
+            println!("upd_msger conn will stop");
             let ins = unsafe { self.inner.muts() };
             ins.shuted = true;
-            ins.conn = None;
+            self.shutdown();
+            // ins.conn = None;
             self.inner.ctx.stop();
         }
     }
+
+    #[cfg(unix)]
+    fn shutdown(&self) {
+        extern "C" {
+            fn shutdown(socket: i32, how: i32) -> i32;
+            fn sleep(seconds: u32) -> u32;
+        }
+        if let Some(conn)=&self.inner.conn {
+            // libc::shubd
+            let fd = conn.as_raw_fd();
+            let frt=unsafe { shutdown(fd, 2) };
+            println!("udp {} shutdown frt:{}",fd,frt);
+        }
+    }
+    #[cfg(not(unix))]
+    fn shutdown(&self) {}
+
     /* pub async fn remote_addr(&self) -> Option<SocketAddr> {
         match &self.inner.conn {
             None => None,
