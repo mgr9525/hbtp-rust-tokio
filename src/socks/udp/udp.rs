@@ -11,8 +11,8 @@ use ruisutil::bytes;
 use crate::socks::msg;
 
 use super::udps::UdpMsgParse;
-#[cfg(unix)]
-use std::os::unix::prelude::*;
+// #[cfg(unix)]
+// use std::os::unix::prelude::*;
 
 #[derive(Clone)]
 pub struct UMsgerServ {
@@ -53,20 +53,23 @@ impl UMsgerServ {
 
     pub fn stop(&self) {
         if !self.inner.shuted {
-            println!("upd_msger conn will stop");
+            println!("udp_msger conn will stop");
             let ins = unsafe { self.inner.muts() };
             ins.shuted = true;
-            self.shutdown();
-            // ins.conn = None;
             self.inner.ctx.stop();
+            // c.shutdown();
+            /* let conn = std::mem::replace(&mut ins.conn, None);
+            if let Some(v) = conn {
+                std::mem::drop(v);
+            } */
+            ins.conn = None;
         }
     }
 
-    #[cfg(unix)]
+    /* #[cfg(unix)]
     fn shutdown(&self) {
         extern "C" {
             fn shutdown(socket: i32, how: i32) -> i32;
-            fn sleep(seconds: u32) -> u32;
         }
         if let Some(conn)=&self.inner.conn {
             // libc::shubd
@@ -76,7 +79,7 @@ impl UMsgerServ {
         }
     }
     #[cfg(not(unix))]
-    fn shutdown(&self) {}
+    fn shutdown(&self) {} */
 
     /* pub async fn remote_addr(&self) -> Option<SocketAddr> {
         match &self.inner.conn {
@@ -99,7 +102,7 @@ impl UMsgerServ {
         ins.conn = Some(conn);
         self.run_recv().await;
         self.stop();
-        println!("UMsgerServ end run check");
+        println!("udp_msger end run check");
         Ok(())
     }
     async fn run_recv(&self) {
@@ -108,11 +111,12 @@ impl UMsgerServ {
                 let mut buf = vec![0u8; 1500].into_boxed_slice();
                 match conn.recv_from(&mut buf[..]).await {
                     Err(e) => {
-                        println!("udp recv err:{}", e);
+                        println!("udp_msger recv err:{}", e);
                         self.stop();
                         async_std::task::sleep(Duration::from_millis(5)).await;
                     }
                     Ok((n, src)) => {
+                        // println!("udp_msger recv_from({}):{}", src.to_string().as_str(), n);
                         if n <= 1472 {
                             let c = self.clone();
                             async_std::task::spawn(async move {
