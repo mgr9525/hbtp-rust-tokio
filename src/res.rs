@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io, time::Duration};
 
-use async_std::net::TcpStream;
+use async_std::{net::TcpStream, sync::Mutex};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
@@ -19,9 +19,10 @@ struct Inner {
     ctrl: i32,
     cmds: String,
     args: Option<QString>,
-    heads: Option<Box<[u8]>>,
-    bodys: Option<Box<[u8]>>,
-    body_len: usize,
+    heads: Option<ruisutil::bytes::ByteBox>,
+    bodys: Option<ruisutil::bytes::ByteBox>,
+    bodyok: Mutex<bool>,
+    bodylen: usize,
 
     data: HashMap<String, Vec<u8>>,
 }
@@ -36,7 +37,8 @@ impl<'a> Context {
                 args: None,
                 heads: None,
                 bodys: None,
-                body_len: byln,
+                bodyok: Mutex::new(false),
+                bodylen: byln,
                 data: HashMap::new(),
             }),
         }
@@ -63,9 +65,6 @@ impl<'a> Context {
         if (info.len_head) as u64 > cfg.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        if (info.len_body) as u64 > cfg.max_bodys {
-            return Err(ruisutil::ioerr("bytes3 out limit!!", None));
-        }
         let rt = Self::new(info.control, info.len_body as usize);
         let ins = unsafe { rt.inner.muts() };
         let lnsz = info.len_cmd as usize;
@@ -89,14 +88,14 @@ impl<'a> Context {
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
-            ins.heads = Some(bts);
+            ins.heads = Some(ruisutil::bytes::ByteBox::from(bts));
         }
-        let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_bodys);
+        /* let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_bodys);
         let lnsz = info.len_body as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
             ins.bodys = Some(bts);
-        }
+        } */
         ins.conn = Some(conn);
         Ok(rt)
     }
@@ -172,19 +171,34 @@ impl<'a> Context {
             ins.args = Some(QString::new(vec![(name, value)]));
         }
     }
-    pub fn get_heads(&self) -> &Option<Box<[u8]>> {
+    pub fn get_heads(&self) -> &Option<ruisutil::bytes::ByteBox> {
         &self.inner.heads
     }
-    pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
+    pub async fn get_bodys(
+        &self,
+        ctx: Option<ruisutil::Context>,
+    ) -> &Option<ruisutil::bytes::ByteBox> {
+        let mut lkv = self.inner.bodyok.lock().await;
+        if !*lkv {
+            if self.inner.bodylen > 0 {
+                let ins = unsafe { self.inner.muts() };
+                if let Some(conn) = &mut ins.conn {
+                    let ctxs = match ctx {
+                        None => ruisutil::Context::background(None),
+                        Some(v) => v,
+                    };
+                    match ruisutil::tcp_read_async(&ctxs, conn, self.inner.bodylen).await {
+                        Ok(bts) => ins.bodys = Some(ruisutil::bytes::ByteBox::from(bts)),
+                        Err(e) => println!("get_bodys tcp read err:{}", e),
+                    }
+                }
+            }
+            *lkv = true
+        }
         &self.inner.bodys
     }
-    pub fn own_heads(&self) -> Option<Box<[u8]>> {
-        let ins = unsafe { self.inner.muts() };
-        std::mem::replace(&mut ins.heads, None)
-    }
-    pub fn own_bodys(&self) -> Option<Box<[u8]>> {
-        let ins = unsafe { self.inner.muts() };
-        std::mem::replace(&mut ins.bodys, None)
+    pub fn body_len(&self) -> usize {
+        self.inner.bodylen
     }
     pub fn is_sended(&self) -> bool {
         self.inner.sended
@@ -198,8 +212,8 @@ impl<'a> Context {
             },
         }
     }
-    pub fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
-        match &self.inner.bodys {
+    pub async fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match self.get_bodys(None).await {
             None => Err(ruisutil::ioerr("bodys nil", None)),
             Some(v) => match serde_json::from_slice(v) {
                 Ok(vs) => Ok(vs),
@@ -308,7 +322,6 @@ impl ResInfoV1 {
 pub struct LmtMaxConfig {
     pub max_ohther: u64,
     pub max_heads: u64,
-    pub max_bodys: u64,
 }
 
 impl Default for LmtMaxConfig {
@@ -316,7 +329,6 @@ impl Default for LmtMaxConfig {
         Self {
             max_ohther: 1024 * 1024 * 2, //2M
             max_heads: 1024 * 1024 * 10, //10M
-            max_bodys: 1024 * 1024 * 50, //50M
         }
     }
 }

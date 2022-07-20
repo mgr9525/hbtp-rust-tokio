@@ -1,7 +1,7 @@
 use std::{io, mem, net::ToSocketAddrs, time::Duration};
 
-use async_std::net::TcpStream;
 use async_std::prelude::*;
+use async_std::{net::TcpStream, sync::Mutex};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
@@ -18,9 +18,8 @@ pub struct Request {
 
     tmout: Duration,
     lmt_tm: LmtTmConfig,
+    lmt_max: LmtMaxConfig,
 }
-const MaxHeads: u64 = 1024 * 1024 * 100; //100M
-const MaxBodys: u64 = 1024 * 1024 * 1024; //1G
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
         Self {
@@ -34,10 +33,14 @@ impl Request {
 
             tmout: Duration::from_secs(5),
             lmt_tm: LmtTmConfig::default(),
+            lmt_max: LmtMaxConfig::default(),
         }
     }
     pub fn set_lmt_tm(&mut self, limit: LmtTmConfig) {
         self.lmt_tm = limit;
+    }
+    pub fn set_lmt_max(&mut self, limit: LmtMaxConfig) {
+        self.lmt_max = limit;
     }
     pub fn newcmd(addr: &str, control: i32, s: &str) -> Self {
         let mut c = Self::new(addr, control);
@@ -131,27 +134,25 @@ impl Request {
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        if (info.len_head) as u64 > MaxHeads {
+        if (info.len_head) as u64 > self.lmt_max.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        if (info.len_body) as u64 > MaxBodys {
-            return Err(ruisutil::ioerr("bytes3 out limit!!", None));
-        }
-        let mut rt = Response::new();
-        rt.code = info.code;
+        let rt = Response::new(info.len_body as usize);
+        let ins=unsafe{rt.inner.muts()};
+        ins.code = info.code;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
-            rt.heads = Some(bts);
+            ins.heads = Some(ruisutil::bytes::ByteBox::from(bts));
         }
-        let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
+        /* let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let lnsz = info.len_body as usize;
         if lnsz > 0 {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
             rt.bodys = Some(bts);
-        }
-        rt.conn = Some(conn);
+        } */
+        ins.conn = Some(conn);
         Ok(rt)
     }
     pub async fn dors(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<Response> {
@@ -188,50 +189,78 @@ impl Request {
 }
 
 pub struct Response {
+    inner: ruisutil::ArcMut<Inner>,
+}
+
+pub struct Inner {
     conn: Option<TcpStream>,
 
     code: i32,
-    heads: Option<Box<[u8]>>,
-    bodys: Option<Box<[u8]>>,
+    heads: Option<ruisutil::bytes::ByteBox>,
+    bodys: Option<ruisutil::bytes::ByteBox>,
+    bodyok: Mutex<bool>,
+    bodylen: usize,
 }
 impl<'a> Response {
-    fn new() -> Self {
+    fn new(byln: usize) -> Self {
         Self {
-            conn: None,
-            code: 0,
-            heads: None,
-            bodys: None,
+            inner: ruisutil::ArcMut::new(Inner {
+                conn: None,
+                code: 0,
+                heads: None,
+                bodys: None,
+                bodyok: Mutex::new(false),
+                bodylen: byln,
+            }),
         }
     }
     pub fn get_conn(&self) -> &TcpStream {
-        if let Some(v) = &self.conn {
+        if let Some(v) = &self.inner.conn {
             return v;
         }
         panic!("conn?");
     }
-    pub fn own_conn(&mut self) -> TcpStream {
-        if let Some(v) = std::mem::replace(&mut self.conn, None) {
+    pub fn own_conn(&self) -> TcpStream {
+        let ins = unsafe { self.inner.muts() };
+        if let Some(v) = std::mem::replace(&mut ins.conn, None) {
             return v;
         }
         panic!("conn?");
     }
     pub fn get_code(&self) -> i32 {
-        self.code
+        self.inner.code
     }
-    pub fn get_heads(&self) -> &Option<Box<[u8]>> {
-        &self.heads
+    pub fn get_heads(&self) -> &Option<ruisutil::bytes::ByteBox> {
+        &self.inner.heads
     }
-    pub fn get_bodys(&self) -> &Option<Box<[u8]>> {
-        &self.bodys
+    pub async fn get_bodys(
+        &self,
+        ctx: Option<ruisutil::Context>,
+    ) -> &Option<ruisutil::bytes::ByteBox> {
+        let mut lkv = self.inner.bodyok.lock().await;
+        if !*lkv {
+            if self.inner.bodylen > 0 {
+                let ins = unsafe { self.inner.muts() };
+                if let Some(conn) = &mut ins.conn {
+                    let ctxs = match ctx {
+                        None => ruisutil::Context::background(None),
+                        Some(v) => v,
+                    };
+                    match ruisutil::tcp_read_async(&ctxs, conn, self.inner.bodylen).await {
+                        Ok(bts) => ins.bodys = Some(ruisutil::bytes::ByteBox::from(bts)),
+                        Err(e) => println!("get_bodys tcp read err:{}", e),
+                    }
+                }
+            }
+            *lkv = true
+        }
+        &self.inner.bodys
     }
-    pub fn own_heads(&mut self) -> Option<Box<[u8]>> {
-        std::mem::replace(&mut self.heads, None)
-    }
-    pub fn own_bodys(&mut self) -> Option<Box<[u8]>> {
-        std::mem::replace(&mut self.bodys, None)
+    pub fn body_len(&self) -> usize {
+        self.inner.bodylen
     }
     pub fn head_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
-        match &self.heads {
+        match &self.inner.heads {
             None => Err(ruisutil::ioerr("heads nil", None)),
             Some(v) => match serde_json::from_slice(v) {
                 Ok(vs) => Ok(vs),
@@ -239,8 +268,8 @@ impl<'a> Response {
             },
         }
     }
-    pub fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
-        match &self.bodys {
+    pub async fn body_json<T: Deserialize<'a>>(&'a self) -> io::Result<T> {
+        match self.get_bodys(None).await {
             None => Err(ruisutil::ioerr("bodys nil", None)),
             Some(v) => match serde_json::from_slice(v) {
                 Ok(vs) => Ok(vs),
