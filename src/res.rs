@@ -118,7 +118,8 @@ impl<'a> Context {
         }
         panic!("conn?");
     } */
-    pub fn own_conn(&self) -> TcpStream {
+    pub async fn own_conn(&self) -> TcpStream {
+        self.get_bodys(None).await;
         let ins = unsafe { self.inner.muts() };
         if let Some(v) = std::mem::replace(&mut ins.conn, None) {
             return v;

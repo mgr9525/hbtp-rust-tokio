@@ -138,7 +138,7 @@ impl Request {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
         let rt = Response::new(info.len_body as usize);
-        let ins=unsafe{rt.inner.muts()};
+        let ins = unsafe { rt.inner.muts() };
         ins.code = info.code;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
@@ -220,7 +220,8 @@ impl<'a> Response {
         }
         panic!("conn?");
     }
-    pub fn own_conn(&self) -> TcpStream {
+    pub async fn own_conn(&self) -> TcpStream {
+        self.get_bodys(None).await;
         let ins = unsafe { self.inner.muts() };
         if let Some(v) = std::mem::replace(&mut ins.conn, None) {
             return v;
