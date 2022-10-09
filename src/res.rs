@@ -55,7 +55,7 @@ impl<'a> Context {
         let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_ohther);
         let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        if info.version != 1 {
+        if info.version != 1 && info.version != 2 {
             return Err(ruisutil::ioerr("not found version!", None));
         }
         let cfg = egn.get_lmt_max(info.control).await;
@@ -65,6 +65,15 @@ impl<'a> Context {
         if (info.len_head) as u64 > cfg.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
+        if info.version == 2 {
+            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, 4).await?;
+            // 'H', 'B', 'T', 'P'
+            // if bts[0] == 0x48 && bts[0] == 0x42 && bts[0] == 0x54 && bts[0] == 0x50 {
+            if !bts[..].eq(&[0x48, 0x42, 0x54, 0x50]) {
+                return Err(ruisutil::ioerr("HBTP fmt err!!", None));
+            }
+        }
+
         let rt = Self::new(info.control, info.len_body as usize);
         let ins = unsafe { rt.inner.muts() };
         let lnsz = info.len_cmd as usize;

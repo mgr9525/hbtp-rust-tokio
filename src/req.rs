@@ -110,6 +110,7 @@ impl Request {
         let bts = ruisutil::struct2byte(&reqs);
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
+        // ruisutil::tcp_write_async(&ctx, &mut conn, &[0x48, 0x42, 0x54, 0x50]).await?;
         if reqs.len_cmd > 0 {
             let bts = self.cmds.as_bytes();
             ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
