@@ -19,6 +19,8 @@ pub struct Request {
     tmout: Duration,
     lmt_tm: LmtTmConfig,
     lmt_max: LmtMaxConfig,
+
+    use_version: u16,
 }
 impl Request {
     pub fn new(addr: &str, control: i32) -> Self {
@@ -34,7 +36,12 @@ impl Request {
             tmout: Duration::from_secs(5),
             lmt_tm: LmtTmConfig::default(),
             lmt_max: LmtMaxConfig::default(),
+
+            use_version: 0,
         }
+    }
+    pub fn set_use_version(&mut self, v: u16) {
+        self.use_version = v;
     }
     pub fn set_lmt_tm(&mut self, limit: LmtTmConfig) {
         self.lmt_tm = limit;
@@ -107,10 +114,15 @@ impl Request {
         if let Some(v) = bds {
             reqs.len_body = v.len() as u32;
         }
+        if self.use_version > 0 {
+            reqs.version = self.use_version;
+        }
         let bts = ruisutil::struct2byte(&reqs);
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
-        // ruisutil::tcp_write_async(&ctx, &mut conn, &[0x48, 0x42, 0x54, 0x50]).await?;
+        if reqs.version >= 2 {
+            ruisutil::tcp_write_async(&ctx, &mut conn, &[0x48, 0x42, 0x54, 0x50]).await?;
+        }
         if reqs.len_cmd > 0 {
             let bts = self.cmds.as_bytes();
             ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;

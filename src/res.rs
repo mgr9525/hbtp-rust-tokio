@@ -65,7 +65,7 @@ impl<'a> Context {
         if (info.len_head) as u64 > cfg.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        if info.version == 2 {
+        if info.version >= 2 {
             let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, 4).await?;
             // 'H', 'B', 'T', 'P'
             // if bts[0] == 0x48 && bts[0] == 0x42 && bts[0] == 0x54 && bts[0] == 0x50 {
