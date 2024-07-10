@@ -1,12 +1,12 @@
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc, time::Duration};
 
-use async_std::{
-    channel,
+use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     sync::RwLock,
 };
 use futures::future::BoxFuture;
 use ruisutil::bytes;
+use tokio::task;
 
 use crate::socks::msg;
 
@@ -112,14 +112,14 @@ impl UMsgerServ {
                 match conn.recv_from(&mut buf[..]).await {
                     Err(e) => {
                         println!("udp_msger recv err:{}", e);
-                        self.stop();
-                        async_std::task::sleep(Duration::from_millis(5)).await;
+                        // self.stop();
+                        // async_std::task::sleep(Duration::from_millis(5)).await;
                     }
                     Ok((n, src)) => {
                         // println!("udp_msger recv_from({}):{}", src.to_string().as_str(), n);
                         if n <= 1472 {
                             let c = self.clone();
-                            async_std::task::spawn(async move {
+                            task::spawn(async move {
                                 let bts = bytes::ByteBox::new(Arc::new(buf), 0, n);
                                 if let Err(e) = c.run_parse(bts, src.clone()).await {
                                     println!("run_parse from {} err:{}", src.to_string(), e);
@@ -142,8 +142,8 @@ impl UMsgerServ {
             return Err(ruisutil::ioerr("packet token err!!!", None));
         }
 
-        /* println!("parse packet ctrl:{}", pckt.ctrl);
-        print!("datas:");
+        // println!("parse packet ctrl:{}", pckt.ctrl);
+        /* print!("datas:");
         ruisutil::print_hex(&pckt.data[..]);
         println!(";"); */
         /*
@@ -238,7 +238,7 @@ impl UMsgerServ {
     pub async fn send1bts(
         &self,
         data: bytes::ByteBox,
-        tks: Option<String>,
+        tks: &Option<String>,
         dist: Option<&SocketAddr>,
     ) -> io::Result<()> {
         if data.len() > 1200 {
@@ -258,7 +258,7 @@ impl UMsgerServ {
     pub async fn send1msg(
         &self,
         data: msg::Messageus,
-        tks: Option<String>,
+        tks: &Option<String>,
         dist: Option<&SocketAddr>,
     ) -> io::Result<()> {
         let datas = msg::udps::msg_fmts(data)?;

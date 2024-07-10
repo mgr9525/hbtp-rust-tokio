@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io, time::Duration};
 
-use async_std::{net::TcpStream, sync::Mutex};
+use tokio::{net::TcpStream, sync::Mutex};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
@@ -53,9 +53,9 @@ impl<'a> Context {
         let infoln = std::mem::size_of::<MsgInfo>();
         let lmt_tm = egn.get_lmt_tm().await;
         let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_ohther);
-        let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, infoln).await?;
+        let bts = ruisutil::read_all_async(&ctxs, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
-        if info.version != 1 && info.version != 2 {
+        if info.version < 1 && info.version > 2 {
             return Err(ruisutil::ioerr("not found version!", None));
         }
         let cfg = egn.get_lmt_max(info.control).await;
@@ -66,7 +66,7 @@ impl<'a> Context {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
         if info.version >= 2 {
-            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, 4).await?;
+            let bts = ruisutil::read_all_async(&ctxs, &mut conn, 4).await?;
             // 'H', 'B', 'T', 'P'
             // if bts[0] == 0x48 && bts[0] == 0x42 && bts[0] == 0x54 && bts[0] == 0x50 {
             if !bts[..].eq(&[0x48, 0x42, 0x54, 0x50]) {
@@ -78,7 +78,7 @@ impl<'a> Context {
         let ins = unsafe { rt.inner.muts() };
         let lnsz = info.len_cmd as usize;
         if lnsz > 0 {
-            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz).await?;
+            let bts = ruisutil::read_all_async(&ctxs, &mut conn, lnsz).await?;
             ins.cmds = match std::str::from_utf8(&bts[..]) {
                 Err(_) => return Err(ruisutil::ioerr("cmd err", None)),
                 Ok(v) => String::from(v),
@@ -86,7 +86,7 @@ impl<'a> Context {
         }
         let lnsz = info.len_arg as usize;
         if lnsz > 0 {
-            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            let bts = ruisutil::read_all_async(&ctxs, &mut conn, lnsz as usize).await?;
             let args = match std::str::from_utf8(&bts[..]) {
                 Err(_) => return Err(ruisutil::ioerr("args err", None)),
                 Ok(v) => String::from(v),
@@ -96,13 +96,13 @@ impl<'a> Context {
         let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
-            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            let bts = ruisutil::read_all_async(&ctxs, &mut conn, lnsz as usize).await?;
             ins.heads = Some(ruisutil::bytes::ByteBox::from(bts));
         }
         /* let ctxs = ruisutil::Context::with_timeout(Some(ctx.clone()), lmt_tm.tm_bodys);
         let lnsz = info.len_body as usize;
         if lnsz > 0 {
-            let bts = ruisutil::tcp_read_async(&ctxs, &mut conn, lnsz as usize).await?;
+            let bts = ruisutil::read_all_async(&ctxs, &mut conn, lnsz as usize).await?;
             ins.bodys = Some(bts);
         } */
         ins.conn = Some(conn);
@@ -135,10 +135,18 @@ impl<'a> Context {
         }
         panic!("conn?");
     }
-    pub fn peer_addr(&self) -> io::Result<String> {
+    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+        if let Some(conn) = &self.inner.conn {
+            let addr = conn.local_addr()?;
+            Ok(addr)
+        } else {
+            Err(ruisutil::ioerr("can't get addr", None))
+        }
+    }
+    pub fn peer_addr(&self) -> io::Result<std::net::SocketAddr> {
         if let Some(conn) = &self.inner.conn {
             let addr = conn.peer_addr()?;
-            Ok(addr.to_string())
+            Ok(addr)
         } else {
             Err(ruisutil::ioerr("can't get addr", None))
         }
@@ -197,7 +205,7 @@ impl<'a> Context {
                         None => ruisutil::Context::background(None),
                         Some(v) => v,
                     };
-                    match ruisutil::tcp_read_async(&ctxs, conn, self.inner.bodylen).await {
+                    match ruisutil::read_all_async(&ctxs, conn, self.inner.bodylen).await {
                         Ok(bts) => ins.bodys = Some(ruisutil::bytes::ByteBox::from(bts)),
                         Err(e) => println!("get_bodys tcp read err:{}", e),
                     }
@@ -227,6 +235,15 @@ impl<'a> Context {
             None => Err(ruisutil::ioerr("bodys nil", None)),
             Some(v) => match serde_json::from_slice(v) {
                 Ok(vs) => Ok(vs),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
+    }
+    pub async fn body_str(&self) -> io::Result<String> {
+        match self.get_bodys(None).await {
+            None => Err(ruisutil::ioerr("bodys nil", None)),
+            Some(v) => match std::str::from_utf8(v) {
+                Ok(vs) => Ok(vs.to_string()),
                 Err(e) => Err(ruisutil::ioerr(e, None)),
             },
         }
@@ -261,14 +278,14 @@ impl<'a> Context {
         if let Some(conn) = &mut ins.conn {
             let bts = ruisutil::struct2byte(&res);
             let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(10));
-            ruisutil::tcp_write_async(&ctx, conn, bts).await?;
+            ruisutil::write_all_async(&ctx, conn, bts).await?;
             if let Some(v) = hds {
                 let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(20));
-                ruisutil::tcp_write_async(&ctx, conn, v).await?;
+                ruisutil::write_all_async(&ctx, conn, v).await?;
             }
             if let Some(v) = bds {
                 let ctx = ruisutil::Context::with_timeout(None, Duration::from_secs(30));
-                ruisutil::tcp_write_async(&ctx, conn, v).await?;
+                ruisutil::write_all_async(&ctx, conn, v).await?;
             }
         } else {
             return Err(ruisutil::ioerr("not found conn", None));

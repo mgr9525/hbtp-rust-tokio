@@ -1,18 +1,23 @@
+use std::sync::Arc;
+
 use ruisutil::bytes;
 
+#[derive(Clone)]
 pub struct Messages {
     pub control: i32,
     pub cmds: Option<String>,
-    pub heads: Option<Box<[u8]>>,
-    pub bodys: Option<Box<[u8]>>,
-    pub bodybuf: Option<bytes::ByteBoxBuf>,
+    pub heads: Option<bytes::ByteBox>,
+    pub bodys: Option<bytes::ByteBox>,
+    pub bodybuf: Option<Arc<bytes::ByteBoxBuf>>,
 }
+#[derive(Clone)]
 pub struct Message {
     pub version: u16,
     pub control: i32,
     pub cmds: String,
-    pub heads: Option<Box<[u8]>>,
-    pub bodys: Option<Box<[u8]>>,
+    pub heads: Option<bytes::ByteBox>,
+    pub bodys: Option<bytes::ByteBox>,
+    pub bodybuf: Option<bytes::ByteBoxBuf>,
 }
 impl Message {
     pub fn new() -> Self {
@@ -22,10 +27,23 @@ impl Message {
             cmds: String::new(),
             heads: None,
             bodys: None,
+            bodybuf: None,
         }
     }
-    pub fn own_bodys(&mut self) -> Option<Box<[u8]>> {
+    pub fn own_bodys(&mut self) -> Option<bytes::ByteBox> {
         std::mem::replace(&mut self.bodys, None)
+    }
+    pub fn own_bodybuf(&mut self) -> Option<bytes::ByteBoxBuf> {
+        std::mem::replace(&mut self.bodybuf, None)
+    }
+    pub fn body_box(&self) -> Option<bytes::ByteBox> {
+        if let Some(v) = &self.bodys {
+            Some(v.clone())
+        } else if let Some(v) = &self.bodybuf {
+            Some(v.to_byte_box())
+        } else {
+            None
+        }
     }
 }
 

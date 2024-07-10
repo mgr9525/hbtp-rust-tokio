@@ -1,14 +1,15 @@
-use std::{io, time::Duration};
+use std::{io, time::Duration, sync::Arc};
 
-use async_std::{channel, net::TcpStream, task};
+use tokio::{channel, io::ReadExt, net::TcpStream, task};
 use futures::future::BoxFuture;
+use ruisutil::bytes;
 
-use super::msg;
+use crate::socks::msg;
 
-pub type Senders = channel::Sender<msg::Messages>;
+use super::{MessageRecv, Senders};
 
 #[derive(Clone)]
-pub struct Messager {
+pub struct MessagBuffer {
     inner: ruisutil::ArcMut<Inner>,
 }
 
@@ -20,17 +21,19 @@ struct Inner {
     //check
     ctms: ruisutil::Timer,
     ctmout: ruisutil::Timer,
+    recvbuf: bytes::ByteSteamBuf,
     msgs_sx: channel::Sender<msg::Messages>,
     msgs_rx: channel::Receiver<msg::Messages>,
 
     recver: Box<dyn MessageRecv + Send + Sync>,
 }
 
-impl Messager {
+impl MessagBuffer {
     pub fn new<T>(
         ctx: &ruisutil::Context,
         conn: TcpStream,
         recver: T,
+        recvmax: usize,
         sndbufln: usize,
     ) -> (Self, Senders)
     where
@@ -50,6 +53,8 @@ impl Messager {
 
                 ctms: ruisutil::Timer::new(Duration::from_secs(20)),
                 ctmout: ruisutil::Timer::new(Duration::from_secs(30)),
+
+                recvbuf: bytes::ByteSteamBuf::new(ctx, recvmax, Duration::from_millis(100)),
                 msgs_sx: sx.clone(),
                 msgs_rx: rx,
 
@@ -77,69 +82,53 @@ impl Messager {
         let c = self.clone();
         task::spawn(async move {
             c.run_send().await;
-            println!("Messager run_send end!!");
+            println!("MessagBuffer run_send end!!");
         });
         let c = self.clone();
         task::spawn(async move {
             c.run_recv().await;
-            println!("Messager run_recv end!!");
+            println!("MessagBuffer run_recv end!!");
         });
-        println!("Messager start run check");
+        let c = self.clone();
+        task::spawn(async move {
+            c.run_parse().await;
+            println!("MessagBuffer run_recv end!!");
+        });
+        println!("MessagBuffer start run check");
         while !self.inner.ctx.done() {
             self.run_check().await;
             task::sleep(Duration::from_millis(100)).await;
         }
         if let Err(e) = self.stop() {
-            println!("Messager end stop err:{}", e);
+            println!("MessagBuffer end stop err:{}", e);
         }
-        println!("Messager end run check");
+        println!("MessagBuffer end run check");
     }
 
     async fn run_recv(&self) {
         let ins = unsafe { self.inner.muts() };
         while !self.inner.ctx.done() {
-            match msg::tcps::parse_msg(&self.inner.ctx, &mut ins.conn).await {
+            let mut buf = vec![0u8; 10240].into_boxed_slice();
+            match ins.conn.read(&mut buf).await {
                 Err(e) => {
-                    println!("Messager parse_msg err:{:?}", e);
-                    // let _ = self.stop();
+                    println!("conn read err:{}", e);
                     self.inner.ctx.stop();
                     task::sleep(Duration::from_millis(200)).await;
                 }
-                Ok(v) => {
-                    let ctrl = v.control;
-                    match ctrl {
-                        0 => {
-                            self.inner.ctmout.reset();
-                            if self.inner.is_serv {
-                                let msg = msg::Messages {
-                                    control: 0,
-                                    cmds: Some("heart".into()),
-                                    heads: None,
-                                    bodys: None,
-                                    bodybuf: None,
-                                };
-                                if let Err(e) = self.inner.msgs_sx.try_send(msg) {
-                                    println!("chan send err:{}", e)
-                                }
-                            }
-                        }
-                        _ => {
-                            let c = self.clone();
-                            // let rc = self.inner.recver.clone();
-                            task::spawn(async move {
-                                if let Err(e) = c.inner.recver.on_msg(v).await {
-                                    println!("Messager recv on_msg (ctrl:{}) err:{}", ctrl, e);
-                                    if e.kind() == io::ErrorKind::Interrupted {
-                                        // let _ = c.stop();
-                                        c.inner.ctx.stop();
-                                        task::sleep(Duration::from_millis(200)).await;
-                                    }
-                                }
-                            });
-                        }
+                Ok(n) => {
+                    let bts = bytes::ByteBox::new(Arc::new(buf), 0, n);
+                    if let Err(e) = self.inner.recvbuf.push(bts).await {
+                        println!("conn read err:{}", e);
+                        self.inner.ctx.stop();
                     }
                 }
             }
+        }
+    }
+    async fn run_parse(&self) {
+        let ins = unsafe { self.inner.muts() };
+        while !self.inner.ctx.done() {
+            todo!("not ok!!");
         }
     }
     async fn run_send(&self) {
@@ -198,10 +187,4 @@ impl Messager {
             Ok(())
         }
     }
-}
-
-pub trait MessageRecv {
-    fn on_check(&self) -> BoxFuture<'static, ()>;
-    fn on_msg(&self, msg: msg::Message) -> BoxFuture<'static, io::Result<()>>;
-    // fn on_msg(self, msg: msg::Message) -> Pin<Box<dyn Future<Output = ()> + Sync + Send+'static>>;
 }

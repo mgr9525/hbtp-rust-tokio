@@ -1,24 +1,21 @@
 // extern crate proc_macro;
-extern crate async_std;
-extern crate futures;
-extern crate qstring;
-extern crate ruisutil;
-extern crate serde;
-extern crate serde_json;
+// extern crate async_std;
+// extern crate futures;
+// extern crate qstring;
+// extern crate ruisutil;
+// extern crate serde;
+// extern crate serde_json;
 
-use std::{
-    collections::{HashMap, LinkedList},
-    io,
-    time::Duration,
-};
+use std::{collections::HashMap, io, time::Duration};
 
-use async_std::{
+use futures::future::{BoxFuture, Future};
+use tokio::{
     net::{TcpListener, TcpStream},
+    sync::RwLock,
     task,
 };
-use async_std::{prelude::*, sync::RwLock};
-use futures::future::{BoxFuture, Future};
 
+pub use qstring::QString;
 pub use req::Request;
 pub use req::Response;
 pub use res::Context;
@@ -34,7 +31,7 @@ pub mod socks;
 mod tests {
     use std::{thread, time::Duration};
 
-    use async_std::task;
+    use tokio::task;
 
     use qstring::QString;
 
@@ -84,13 +81,17 @@ mod tests {
 
     #[test]
     fn hbtp_server() {
-        let mut serv = Engine::new(None, "0.0.0.0:7030");
+        let serv = Engine::new(None, "0.0.0.0:7030");
         println!("hbtp serv start!!!");
         // let cb = move |ctx: &mut crate::Context| testFun(ctx);
         // let fun = Box::new(cb);
         // let func = |ctx| Box::pin(testFun(ctx));
-        serv.reg_fun(1, testFun, None);
-        task::block_on(Engine::run(serv));
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                serv.reg_fun(1, testFun, None).await;
+                Engine::run(serv).await
+            });
     }
     async fn testFun(c: crate::Context) -> std::io::Result<()> {
         println!(
@@ -100,6 +101,9 @@ mod tests {
             c.command() == "hello",
             c.get_arg("hehe1").unwrap().as_str()
         );
+        if let Ok(bs) = c.body_str().await {
+            println!("req body data:{}", &bs)
+        }
         /* if let Some(v) = c.get() {
             let cs = v.read().await;
             cs.get_bodys();
@@ -111,7 +115,7 @@ mod tests {
     }
     #[test]
     fn hbtp_request() {
-        async_std::task::block_on(async {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let mut req = Request::new("localhost:7030", 1);
             req.command("hello");
             req.add_arg("hehe1", "123456789");
@@ -119,7 +123,24 @@ mod tests {
                 Err(e) => println!("do err:{}", e),
                 Ok(res) => {
                     println!("res code:{}", res.get_code());
-                    if let Some(bs) = res.get_bodys() {
+                    if let Ok(bs) = res.body_str().await {
+                        println!("res data:{}", &bs)
+                    }
+                }
+            };
+        });
+    }
+    #[test]
+    fn hbtp_request_tmp() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut req = Request::new("192.168.1.7:7000", 1);
+            req.command("hello");
+            req.add_arg("hehe1", "123456789");
+            match req.do_string(None, "dedededede").await {
+                Err(e) => println!("do err:{}", e),
+                Ok(res) => {
+                    println!("res code:{}", res.get_code());
+                    if let Some(bs) = res.get_bodys(None).await {
                         println!("res data:{}", std::str::from_utf8(&bs[..]).unwrap())
                     }
                 }
@@ -178,7 +199,7 @@ struct Inner {
     ctx: ruisutil::Context,
     lmt_tm: LmtTmConfig,
     lmt_max: LmtMaxConfig,
-    fns: RwLock<HashMap<i32, LinkedList<AsyncFnPtr>>>,
+    fns: RwLock<HashMap<i32, Vec<AsyncFnPtr>>>,
     lmts: RwLock<HashMap<i32, LmtMaxConfig>>,
     addr: String,
     lsr: Option<TcpListener>,
@@ -226,7 +247,6 @@ impl Engine {
         }
     }
 
-    
     pub fn stop(&self) {
         unsafe { self.inner.muts().lsr = None };
         self.inner.ctx.stop();
@@ -241,26 +261,21 @@ impl Engine {
 
         // self.runs().await;
         while !self.inner.ctx.done() {
-            task::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(())
     }
     async fn runs(&self) {
         if let Some(lsr) = &self.inner.lsr {
-            let mut incom = lsr.incoming();
             while !self.inner.ctx.done() {
-                match incom.next().await {
-                    None => break,
-                    Some(stream) => {
-                        if let Ok(conn) = stream {
-                            let c = self.clone();
-                            task::spawn(async move {
-                                c.run_cli(conn).await;
-                                // task::block_on(c.run_cli(conn));
-                            });
-                        } else {
-                            println!("stream conn err!!!!")
-                        }
+                match lsr.accept().await {
+                    Err(e) => break,
+                    Ok((conn, addr)) => {
+                        let c = self.clone();
+                        task::spawn(async move {
+                            c.run_cli(conn).await;
+                            // task::block_on(c.run_cli(conn));
+                        });
                     }
                 }
             }
@@ -277,7 +292,7 @@ impl Engine {
                     if let Some(ls) = lkv.get(&res.control()) {
                         let mut vs = Vec::with_capacity(ls.len());
                         let mut itr = ls.iter();
-                        while let Some(f) = itr.next() {
+                        for f in itr {
                             let fnc = &f.func;
                             vs.push(fnc(res.clone()))
                         }
@@ -291,10 +306,7 @@ impl Engine {
                         }
                         if let Err(e) = ft.await {
                             if let Err(e) = res
-                                .res_string(
-                                    ResCodeErr,
-                                    format!("method return err:{:?}", e).as_str(),
-                                )
+                                .res_string(ResCodeErr, format!("method return err:{}", e).as_str())
                                 .await
                             {
                                 println!("res_string method err:{}", e.to_string().as_str());
@@ -324,10 +336,10 @@ impl Engine {
         {
             let mut lkv = self.inner.fns.write().await;
             if let Some(v) = lkv.get_mut(&control) {
-                v.push_back(fnc);
+                v.push(fnc);
             } else {
-                let mut v = LinkedList::new();
-                v.push_back(fnc);
+                let mut v = Vec::new();
+                v.push(fnc);
                 lkv.insert(control, v);
             }
         }

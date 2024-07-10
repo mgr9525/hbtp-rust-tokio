@@ -41,7 +41,7 @@ pub fn packet_parse(mut buf: bytes::ByteBox) -> io::Result<entity::UdpPackage> {
         data: buf,
     })
 }
-pub fn packet_fmts(ctrl: u16, tks: Option<String>) -> io::Result<bytes::ByteBoxBuf> {
+pub fn packet_fmts(ctrl: u16, tks: &Option<String>) -> io::Result<bytes::ByteBoxBuf> {
     let mut buf = bytes::ByteBoxBuf::new();
     buf.push(vec![0x48, 0x42, 1]);
     buf.push(ruisutil::i2_byte(ctrl as i64, 2));

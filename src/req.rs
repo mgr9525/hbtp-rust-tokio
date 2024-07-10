@@ -1,7 +1,10 @@
-use std::{io, mem, net::ToSocketAddrs, time::Duration};
+use std::{
+    io, mem,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
-use async_std::prelude::*;
-use async_std::{net::TcpStream, sync::Mutex};
+use tokio::{net::TcpStream, sync::Mutex};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +26,7 @@ pub struct Request {
     use_version: u16,
 }
 impl Request {
+    const MINS: Duration = Duration::from_millis(100);
     pub fn new(addr: &str, control: i32) -> Self {
         Self {
             ctx: None,
@@ -33,7 +37,7 @@ impl Request {
             cmds: String::new(),
             args: None,
 
-            tmout: Duration::from_secs(5),
+            tmout: Duration::from_secs(50),
             lmt_tm: LmtTmConfig::default(),
             lmt_max: LmtMaxConfig::default(),
 
@@ -55,7 +59,9 @@ impl Request {
         c
     }
     pub fn timeout(&mut self, ts: Duration) {
-        self.tmout = ts;
+        if ts > Self::MINS {
+            self.tmout = ts;
+        }
     }
     pub fn command(&mut self, s: &str) {
         self.cmds = String::from(s);
@@ -93,8 +99,8 @@ impl Request {
     }
     async fn send(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<TcpStream> {
         let mut conn =
-            async_std::io::timeout(self.tmout.clone(), TcpStream::connect(self.addr.as_str()))
-                .await?;
+            tokio::time::timeout(self.tmout.clone(), TcpStream::connect(self.addr.as_str()))
+                .await??;
         if self.sended {
             return Err(ruisutil::ioerr("already request!", None));
         }
@@ -104,7 +110,7 @@ impl Request {
             args = v.to_string();
         }
         let mut reqs = MsgInfo::new();
-        reqs.version = 1;
+        reqs.version = 2;
         reqs.control = self.ctrl;
         reqs.len_cmd = self.cmds.len() as u16;
         reqs.len_arg = args.len() as u16;
@@ -119,25 +125,25 @@ impl Request {
         }
         let bts = ruisutil::struct2byte(&reqs);
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
-        ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
+        ruisutil::write_all_async(&ctx, &mut conn, bts).await?;
         if reqs.version >= 2 {
-            ruisutil::tcp_write_async(&ctx, &mut conn, &[0x48, 0x42, 0x54, 0x50]).await?;
+            ruisutil::write_all_async(&ctx, &mut conn, &[0x48, 0x42, 0x54, 0x50]).await?;
         }
         if reqs.len_cmd > 0 {
             let bts = self.cmds.as_bytes();
-            ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
+            ruisutil::write_all_async(&ctx, &mut conn, bts).await?;
         }
         if reqs.len_arg > 0 {
             let bts = args.as_bytes();
-            ruisutil::tcp_write_async(&ctx, &mut conn, bts).await?;
+            ruisutil::write_all_async(&ctx, &mut conn, bts).await?;
         }
         if let Some(v) = hds {
             let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
-            ruisutil::tcp_write_async(&ctx, &mut conn, v).await?;
+            ruisutil::write_all_async(&ctx, &mut conn, v).await?;
         }
         if let Some(v) = bds {
             let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_bodys);
-            ruisutil::tcp_write_async(&ctx, &mut conn, v).await?;
+            ruisutil::write_all_async(&ctx, &mut conn, v).await?;
         }
         Ok(conn)
     }
@@ -145,19 +151,19 @@ impl Request {
         let mut info = ResInfoV1::new();
         let infoln = mem::size_of::<ResInfoV1>();
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
-        let bts = ruisutil::tcp_read_async(&ctx, &mut conn, infoln).await?;
+        let bts = ruisutil::read_all_async(&ctx, &mut conn, infoln).await?;
         ruisutil::byte2struct(&mut info, &bts[..])?;
         if (info.len_head) as u64 > self.lmt_max.max_heads {
             return Err(ruisutil::ioerr("bytes2 out limit!!", None));
         }
-        let rt = Response::new(info.len_body as usize);
-        let ins = unsafe { rt.inner.muts() };
-        ins.code = info.code;
+        let heads;
         let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_heads);
         let lnsz = info.len_head as usize;
         if lnsz > 0 {
-            let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
-            ins.heads = Some(ruisutil::bytes::ByteBox::from(bts));
+            let bts = ruisutil::read_all_async(&ctx, &mut conn, lnsz as usize).await?;
+            heads = Some(ruisutil::bytes::ByteBox::from(bts));
+        } else {
+            heads = None;
         }
         /* let ctx = ruisutil::Context::with_timeout(self.ctx.clone(), self.lmt_tm.tm_ohther);
         let lnsz = info.len_body as usize;
@@ -165,8 +171,12 @@ impl Request {
             let bts = ruisutil::tcp_read_async(&ctx, &mut conn, lnsz as usize).await?;
             rt.bodys = Some(bts);
         } */
-        ins.conn = Some(conn);
-        Ok(rt)
+        Ok(Response::new(
+            conn,
+            info.code,
+            heads,
+            info.len_body as usize,
+        ))
     }
     pub async fn dors(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<Response> {
         let conn = self.send(hds, bds).await?;
@@ -201,6 +211,7 @@ impl Request {
     }
 }
 
+#[derive(Clone)]
 pub struct Response {
     inner: ruisutil::ArcMut<Inner>,
 }
@@ -211,18 +222,23 @@ pub struct Inner {
     code: i32,
     heads: Option<ruisutil::bytes::ByteBox>,
     bodys: Option<ruisutil::bytes::ByteBox>,
-    bodyok: Mutex<bool>,
+    bodyok: AtomicBool,
     bodylen: usize,
 }
 impl<'a> Response {
-    fn new(byln: usize) -> Self {
+    fn new(
+        conn: TcpStream,
+        code: i32,
+        heads: Option<ruisutil::bytes::ByteBox>,
+        byln: usize,
+    ) -> Self {
         Self {
             inner: ruisutil::ArcMut::new(Inner {
-                conn: None,
-                code: 0,
-                heads: None,
+                conn: Some(conn),
+                code: code,
+                heads: heads,
                 bodys: None,
-                bodyok: Mutex::new(false),
+                bodyok: AtomicBool::new(false),
                 bodylen: byln,
             }),
         }
@@ -251,8 +267,7 @@ impl<'a> Response {
         &self,
         ctx: Option<ruisutil::Context>,
     ) -> &Option<ruisutil::bytes::ByteBox> {
-        let mut lkv = self.inner.bodyok.lock().await;
-        if !*lkv {
+        if !self.inner.bodyok.load(Ordering::SeqCst) {
             if self.inner.bodylen > 0 {
                 let ins = unsafe { self.inner.muts() };
                 if let Some(conn) = &mut ins.conn {
@@ -260,13 +275,13 @@ impl<'a> Response {
                         None => ruisutil::Context::background(None),
                         Some(v) => v,
                     };
-                    match ruisutil::tcp_read_async(&ctxs, conn, self.inner.bodylen).await {
+                    match ruisutil::read_all_async(&ctxs, conn, self.inner.bodylen).await {
                         Ok(bts) => ins.bodys = Some(ruisutil::bytes::ByteBox::from(bts)),
                         Err(e) => println!("get_bodys tcp read err:{}", e),
                     }
                 }
             }
-            *lkv = true
+            self.inner.bodyok.store(true, Ordering::SeqCst);
         }
         &self.inner.bodys
     }
@@ -289,6 +304,21 @@ impl<'a> Response {
                 Ok(vs) => Ok(vs),
                 Err(e) => Err(ruisutil::ioerr(e, None)),
             },
+        }
+    }
+    pub async fn body_str(&self) -> io::Result<String> {
+        match self.get_bodys(None).await {
+            None => Err(ruisutil::ioerr("bodys nil", None)),
+            Some(v) => match std::str::from_utf8(v) {
+                Ok(vs) => Ok(vs.to_string()),
+                Err(e) => Err(ruisutil::ioerr(e, None)),
+            },
+        }
+    }
+    pub async fn body_strs<T: Into<String>>(&self, def: T) -> String {
+        match self.body_str().await {
+            Ok(vs) => vs,
+            Err(_) => def.into(),
         }
     }
 }
