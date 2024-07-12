@@ -4,9 +4,9 @@ use std::{
     time::Duration,
 };
 
-use tokio::{net::TcpStream, sync::Mutex};
 use qstring::QString;
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpStream;
 
 use crate::res::*;
 
@@ -33,6 +33,23 @@ impl Request {
             sended: false,
             addr: String::from(addr),
             conn: None,
+            ctrl: control,
+            cmds: String::new(),
+            args: None,
+
+            tmout: Duration::from_secs(50),
+            lmt_tm: LmtTmConfig::default(),
+            lmt_max: LmtMaxConfig::default(),
+
+            use_version: 0,
+        }
+    }
+    pub fn new_conn(conn: TcpStream, control: i32) -> Self {
+        Self {
+            ctx: None,
+            sended: false,
+            addr: String::new(),
+            conn: Some(conn),
             ctrl: control,
             cmds: String::new(),
             args: None,
@@ -98,9 +115,13 @@ impl Request {
         }
     }
     async fn send(&mut self, hds: Option<&[u8]>, bds: Option<&[u8]>) -> io::Result<TcpStream> {
-        let mut conn =
+        let mut conn = if self.conn.is_none() {
             tokio::time::timeout(self.tmout.clone(), TcpStream::connect(self.addr.as_str()))
-                .await??;
+                .await??
+        } else {
+            let rst = std::mem::replace(&mut self.conn, None);
+            rst.unwrap()
+        };
         if self.sended {
             return Err(ruisutil::ioerr("already request!", None));
         }
